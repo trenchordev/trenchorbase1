@@ -13,6 +13,9 @@ export const metadata = {
 export default function RootLayout({ children }) {
   return (
     <html lang="en">
+      <head>
+        <meta name="virtual-protocol-site-verification" content="71fd10308b983904c7f1be3af23a2586" />
+      </head>
       <body className="antialiased text-white">
         {/* Global Background Image System */}
         <div className="fixed inset-0 z-[-50] bg-black pointer-events-none">
