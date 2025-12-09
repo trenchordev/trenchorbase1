@@ -3,8 +3,11 @@ import Image from 'next/image';
 import LayoutWrapper from '../components/LayoutWrapper';
 
 export const metadata = {
-  title: 'Crypto Trading Leaderboard',
+  title: 'Trenchor Base',
   description: 'Dark-themed cryptocurrency trading leaderboard dashboard',
+  icons: {
+    icon: '/images/trenchor-logo.png',
+  },
 };
 
 export default function RootLayout({ children }) {
