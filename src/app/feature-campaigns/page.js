@@ -119,9 +119,9 @@ export default function FeatureCampaignsPage() {
 
               return (
                 <div key={token.tokenId || token.id} className="relative rounded-xl bg-[#0d1520] border border-[#00ff41]/20 hover:border-[#00ff41]/50 transition-all duration-300 p-8 flex flex-col w-[400px]">
-                  {/* LIVE Badge */}
+                  {/* LOADING Badge */}
                   <div className="absolute top-5 right-5">
-                    <span className="px-3 py-1.5 text-xs font-bold rounded-md bg-[#00ff41] text-black">LIVE</span>
+                    <span className="px-3 py-1.5 text-xs font-bold rounded-md bg-[#ffbf00] text-black">LOADING</span>
                   </div>
 
                   {/* Logo */}
