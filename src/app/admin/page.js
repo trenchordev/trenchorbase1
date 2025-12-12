@@ -90,7 +90,7 @@ export default function AdminPage() {
     // Poll job statuses every 10 seconds
     const interval = setInterval(() => {
       fetchJobStatuses();
-    }, 10000);
+    }, 4000);
     
     return () => clearInterval(interval);
   }, [isAuthenticated]);
