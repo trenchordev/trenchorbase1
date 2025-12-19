@@ -1,0 +1,47 @@
+import { NextResponse } from 'next/server';
+import { redis } from '@/lib/redis';
+
+export async function GET(request) {
+  try {
+    const { searchParams } = new URL(request.url);
+    const campaignId = searchParams.get('campaignId');
+
+    if (!campaignId) {
+      return NextResponse.json(
+        { error: 'Campaign ID is required' },
+        { status: 400 }
+      );
+    }
+
+    const leaderboardKey = `leaderboard:campaign:${campaignId}`;
+    
+    // Get top 100 from sorted set (descending order)
+    const entries = await redis.zrevrange(leaderboardKey, 0, 99, 'WITHSCORES');
+    
+    // Parse entries into array of {wallet, points}
+    const leaderboard = [];
+    for (let i = 0; i < entries.length; i += 2) {
+      leaderboard.push({
+        wallet: entries[i],
+        points: parseInt(entries[i + 1]),
+        rank: (i / 2) + 1
+      });
+    }
+
+    // Get campaign info
+    const campaignData = await redis.get(`campaign:${campaignId}`);
+    const campaign = campaignData ? JSON.parse(campaignData) : null;
+
+    return NextResponse.json({ 
+      leaderboard,
+      campaign,
+      totalParticipants: leaderboard.length
+    });
+  } catch (error) {
+    console.error('Error fetching leaderboard:', error);
+    return NextResponse.json(
+      { error: 'Failed to fetch leaderboard' },
+      { status: 500 }
+    );
+  }
+}

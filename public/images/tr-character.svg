@@ -1,0 +1,75 @@
+<svg width="640" height="960" viewBox="0 0 640 960" xmlns="http://www.w3.org/2000/svg" role="img" aria-labelledby="title desc">
+  <title id="title">Trenchor Neon Sentinel</title>
+  <desc id="desc">Neon yeşil kodlarla çevrili futuristik bir siber muhafız</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#020b05" />
+      <stop offset="60%" stop-color="#041d0f" />
+      <stop offset="100%" stop-color="#021005" />
+    </linearGradient>
+    <linearGradient id="cape" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#0a361d" stop-opacity="0.8" />
+      <stop offset="100%" stop-color="#03210f" stop-opacity="0.9" />
+    </linearGradient>
+    <linearGradient id="armor" x1="0" y1="0" x2="0" y2="1">
+      <stop offset="0%" stop-color="#1f2a33" />
+      <stop offset="100%" stop-color="#080d12" />
+    </linearGradient>
+    <linearGradient id="glow" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0%" stop-color="#4dff9d" stop-opacity="0.9" />
+      <stop offset="100%" stop-color="#0aff7f" stop-opacity="0.6" />
+    </linearGradient>
+    <filter id="glowFilter" x="-50%" y="-50%" width="200%" height="200%">
+      <feGaussianBlur stdDeviation="20" result="blur" />
+      <feMerge>
+        <feMergeNode in="blur" />
+        <feMergeNode in="SourceGraphic" />
+      </feMerge>
+    </filter>
+  </defs>
+  <rect width="640" height="960" fill="url(#bg)" />
+  <g opacity="0.3" stroke="#00ff7a" stroke-width="0.6" font-family="'Share Tech Mono', 'Space Mono', monospace" fill="none">
+    <path d="M50 40 h540" />
+    <path d="M50 80 h540" />
+    <path d="M50 120 h540" />
+    <path d="M80 0 v960" />
+    <path d="M160 0 v960" />
+    <path d="M240 0 v960" />
+    <path d="M320 0 v960" />
+    <path d="M400 0 v960" />
+    <path d="M480 0 v960" />
+    <path d="M560 0 v960" />
+  </g>
+  <g fill="#072212" opacity="0.4">
+    <rect x="30" y="100" width="220" height="12" rx="6" />
+    <rect x="70" y="140" width="260" height="10" rx="5" />
+    <rect x="110" y="180" width="320" height="10" rx="5" />
+    <rect x="150" y="220" width="360" height="10" rx="5" />
+    <rect x="190" y="260" width="320" height="10" rx="5" />
+  </g>
+  <g>
+    <path d="M120 430 C80 640 80 780 150 850 L320 910 L490 850 C560 780 560 640 520 430" fill="url(#cape)" />
+    <path d="M240 210 Q320 120 400 210 L430 360 Q320 420 210 360 Z" fill="url(#armor)" stroke="#0cf592" stroke-width="4" />
+    <ellipse cx="320" cy="182" rx="95" ry="80" fill="#050d0b" stroke="#1ef793" stroke-width="6" />
+    <path d="M255 170 Q320 130 385 170 Q360 200 320 210 Q280 200 255 170" fill="#07241a" />
+    <path d="M270 200 L295 205 Q320 220 345 205 L370 200 L360 235 Q320 255 280 235 Z" fill="#0cf592" opacity="0.85" />
+    <rect x="250" y="250" width="140" height="40" rx="12" fill="#041f13" stroke="#0cf592" stroke-width="4" />
+    <path d="M260 260 L300 260 Q320 265 320 280 Q320 295 300 300 L260 300" fill="none" stroke="#43ffb4" stroke-width="6" />
+    <path d="M380 260 L340 260 Q320 265 320 280 Q320 295 340 300 L380 300" fill="none" stroke="#43ffb4" stroke-width="6" />
+    <path d="M220 330 L420 330 L455 520 Q420 620 320 640 Q220 620 185 520 Z" fill="url(#armor)" stroke="#0cf592" stroke-width="4" />
+    <path d="M290 360 L350 360 L360 520 Q320 560 280 520 Z" fill="#050b0a" opacity="0.8" />
+    <path d="M235 360 Q210 460 230 540 L270 560 L240 360" fill="#0cf592" opacity="0.45" />
+    <path d="M405 360 Q430 460 410 540 L370 560 L400 360" fill="#0cf592" opacity="0.45" />
+    <path d="M275 650 L305 640 Q320 630 335 640 L365 650 L350 760 L290 760 Z" fill="#071710" stroke="#1ef793" stroke-width="4" />
+    <path d="M260 760 L380 760 L400 900 Q320 930 240 900 Z" fill="url(#armor)" stroke="#0cf592" stroke-width="4" />
+    <path d="M240 900 L280 760" fill="none" stroke="#4dff9d" stroke-width="6" />
+    <path d="M400 900 L360 760" fill="none" stroke="#4dff9d" stroke-width="6" />
+    <circle cx="320" cy="690" r="35" fill="#04110a" stroke="#1ef793" stroke-width="6" />
+    <circle cx="320" cy="690" r="12" fill="#0cf592" />
+  </g>
+  <g filter="url(#glowFilter)">
+    <path d="M140 120 h360" stroke="url(#glow)" stroke-width="3" stroke-linecap="round" opacity="0.4" />
+    <path d="M100 180 h440" stroke="url(#glow)" stroke-width="2" stroke-linecap="round" opacity="0.25" />
+    <path d="M80 240 h480" stroke="url(#glow)" stroke-width="1.5" stroke-linecap="round" opacity="0.2" />
+  </g>
+</svg>
