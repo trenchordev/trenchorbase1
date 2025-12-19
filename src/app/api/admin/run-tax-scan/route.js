@@ -120,6 +120,15 @@ export async function POST(request) {
     const MAX_PROCESSING_TIME = 50000; // 50 seconds max (leave 10s buffer for response)
     const startTime = Date.now();
 
+    console.log(`🔍 ========== MANUEL TAX SCAN STARTING ==========`);
+    console.log(`🎯 Campaign: ${name} (ID: ${campaignId})`);
+    console.log(`🎯 Start Block: ${fromBlock}`);
+    console.log(`🏁 End Block: ${toBlock}`);
+    console.log(`📊 Total Blocks to Scan: ${totalBlocks}`);
+    console.log(`📊 Chunk Size: ${currentChunkSize}`);
+    console.log(`⚡ RPC: ${infuraKey ? 'Infura (Premium)' : 'Public'}`);
+    console.log(`================================================\n`);
+
     console.log(`Starting scan from ${fromBlock} to ${toBlock} (Total: ${totalBlocks} blocks, Chunk: ${currentChunkSize})`);
 
     while (currentFrom < toBlock) {
@@ -204,7 +213,10 @@ export async function POST(request) {
           }
 
           if (retries >= MAX_RETRIES) {
-            console.error(`Max retries reached for chunk ${currentFrom}-${currentTo}. Skipping.`);
+            console.error(`❌ MAX RETRIES REACHED for chunk ${currentFrom}-${currentTo}`);
+            console.error(`⚠️ SKIPPING BLOCKS: ${currentFrom} to ${currentTo} (${currentTo - currentFrom} blocks)`);
+            console.error(`🚨 THIS MEANS SOME TRANSACTIONS MAY BE MISSING!`);
+            console.error(`💡 Suggestion: Try FAST SCAN for better chunk handling`);
             currentFrom = currentTo; // Skip to avoid infinite loop
             success = true;
           }
@@ -221,14 +233,10 @@ export async function POST(request) {
     const totalTxs = taxTransferLogs.length;
     console.log(`Filtering ${totalTxs} candidate transactions...`);
     
-    // If too many transactions and approaching timeout, limit processing
-    const MAX_TX_TO_PROCESS = 200; // Limit to prevent timeout
-    const txsToProcess = totalTxs > MAX_TX_TO_PROCESS ? MAX_TX_TO_PROCESS : totalTxs;
-    
-    if (totalTxs > MAX_TX_TO_PROCESS) {
-      console.warn(`⚠️ Too many transactions (${totalTxs}). Processing first ${MAX_TX_TO_PROCESS} to avoid timeout.`);
-      console.warn(`💡 Use AUTO-SCAN for complete results on large datasets.`);
-    }
+    // NO LIMIT - Process all transactions found
+    // Incremental updates mean we can process as many as possible in 50s
+    // and continue in next scan if timeout occurs
+    const txsToProcess = totalTxs;
 
     for (let i = 0; i < txsToProcess; i++) {
       const log = taxTransferLogs[i];
@@ -333,29 +341,41 @@ export async function POST(request) {
       }
     }
 
-    // Generate leaderboard
-    const leaderboard = Array.from(userTaxPaid.entries())
-      .map(([address, taxPaid]) => ({
-        address,
-        taxPaidRaw: taxPaid.toString(),
-        taxPaidVirtual: Number(taxPaid) / 1e18,
-      }))
-      .sort((a, b) => Number(BigInt(b.taxPaidRaw) - BigInt(a.taxPaidRaw)));
-
-    // Save to Redis
+    // INCREMENTAL UPDATE - Add to existing leaderboard
     const redisKey = `tax-leaderboard:${campaignId}`;
     const metaKey = `tax-leaderboard-meta:${campaignId}`;
 
-    await redis.del(redisKey);
+    console.log(`[Manual Scan] Incrementally updating leaderboard with ${userTaxPaid.size} users...`);
 
-    for (const entry of leaderboard) {
+    // Update each user's score (add to existing or create new)
+    for (const [address, taxPaid] of userTaxPaid.entries()) {
+      const taxPaidVirtual = Number(taxPaid) / 1e18;
+      
+      // Get existing score
+      const existingScore = await redis.zscore(redisKey, address);
+      
+      // Add to existing or create new
+      const newScore = existingScore ? parseFloat(existingScore) + taxPaidVirtual : taxPaidVirtual;
+      
       await redis.zadd(redisKey, {
-        score: entry.taxPaidVirtual,
-        member: entry.address,
+        score: newScore,
+        member: address,
       });
     }
 
+    // Get final leaderboard for response
+    const leaderboardData = await redis.zrange(redisKey, 0, -1, { withScores: true, rev: true });
+    const leaderboard = [];
+    for (let i = 0; i < leaderboardData.length; i += 2) {
+      leaderboard.push({
+        address: leaderboardData[i],
+        taxPaidVirtual: parseFloat(leaderboardData[i + 1]),
+      });
+    }
+
+    // Calculate total from all users
     const totalTaxPaid = leaderboard.reduce((sum, e) => sum + e.taxPaidVirtual, 0).toFixed(4);
+    const totalUsers = leaderboard.length;
     const now = Date.now();
 
     await redis.hset(metaKey, {
@@ -364,39 +384,59 @@ export async function POST(request) {
       targetToken: targetToken.toLowerCase(),
       taxWallet: taxWallet.toLowerCase(),
       lastUpdated: now.toString(),
-      totalUsers: leaderboard.length.toString(),
+      totalUsers: totalUsers.toString(),
       totalTaxPaid: totalTaxPaid,
       startBlock: fromBlock.toString(),
       endBlock: currentFrom.toString(), // Use actual scanned end block, not requested
       validTxCount: validCount.toString(),
       skippedTxCount: skippedCount.toString(),
+      lastScanIncremental: 'true',
     });
 
     // Update campaign config with last scan info
     await redis.set(`tax-campaign-config:${campaignId}`, {
       ...config,
       lastScanned: now,
-      totalUsers: leaderboard.length,
+      totalUsers: totalUsers,
       totalTax: totalTaxPaid,
     });
 
     const totalExecutionTime = Date.now() - startTime;
     const wasPartialScan = processedTxs < totalTxs || (currentFrom < toBlock);
+    const actualScannedBlocks = currentFrom - fromBlock;
+
+    console.log(`\n🏁 ========== MANUEL SCAN COMPLETE ==========`);
+    console.log(`✅ Requested Range: ${fromBlock} - ${toBlock} (${totalBlocks} blocks)`);
+    console.log(`📦 Actually Scanned: ${fromBlock} - ${currentFrom} (${actualScannedBlocks} blocks)`);
+    console.log(`📊 Coverage: ${Math.round((Number(actualScannedBlocks) / Number(totalBlocks)) * 100)}%`);
+    console.log(`👥 Total Users: ${totalUsers}`);
+    console.log(`💰 Total Tax: ${totalTaxPaid} VIRTUAL`);
+    console.log(`✓ Valid Transactions: ${validCount}`);
+    console.log(`⏱️ Execution Time: ${totalExecutionTime}ms`);
+    if (wasPartialScan) {
+      console.log(`⚠️ PARTIAL SCAN: Stopped at block ${currentFrom} (${toBlock - currentFrom} blocks remaining)`);
+    }
+    console.log(`============================================\n`);
 
     return NextResponse.json({
       success: true,
       partial: wasPartialScan,
       warning: wasPartialScan ? 'Partial scan completed due to time constraints. Use AUTO-SCAN for complete results.' : null,
       stats: {
-        totalUsers: leaderboard.length,
+        totalUsers: totalUsers,
         totalTaxPaid,
+        newUsersThisScan: userTaxPaid.size,
         validTxCount: validCount,
         skippedTxCount: skippedCount,
         processedTxCount: processedTxs,
         totalTxFound: totalTxs,
         scannedBlocks: `${fromBlock} - ${currentFrom}`,
         requestedBlocks: `${fromBlock} - ${toBlock}`,
+        actualBlocksScanned: Number(actualScannedBlocks),
+        totalBlocksRequested: Number(totalBlocks),
+        coveragePercentage: Math.round((Number(actualScannedBlocks) / Number(totalBlocks)) * 100),
         executionTime: `${totalExecutionTime}ms`,
+        isIncremental: true,
         topPayers: leaderboard.slice(0, 10),
       }
     });

@@ -362,11 +362,15 @@ export default function AdminPage() {
   };
 
   const handleRunTaxScript = async (campaign) => {
-    const blockInfo = campaign.startBlock && campaign.endBlock 
-      ? `blocks ${campaign.startBlock} to ${campaign.endBlock} (${parseInt(campaign.endBlock) - parseInt(campaign.startBlock)} blocks)`
-      : `the last ${campaign.timeWindowMinutes || 99} minutes`;
+    let blockInfo, totalBlocks;
+    if (campaign.startBlock && campaign.endBlock) {
+      totalBlocks = parseInt(campaign.endBlock) - parseInt(campaign.startBlock);
+      blockInfo = `🎯 START: ${campaign.startBlock}\n🏁 END: ${campaign.endBlock}\n📊 TOTAL: ${totalBlocks} blocks`;
+    } else {
+      blockInfo = `⏰ Last ${campaign.timeWindowMinutes || 99} minutes\n⚠️ Results will vary each time!`;
+    }
     
-    if (!confirm(`Run tax leaderboard scan for "${campaign.name}"?\n\n⚠️ This will scan ${blockInfo}.\n\n💡 For consistent results, make sure both START and END blocks are specified in campaign config!`)) return;
+    if (!confirm(`🔍 MANUEL SCAN\n\n${blockInfo}\n\nThis will scan ALL transactions in this range.\n\nContinue?`)) return;
 
     setScanning(true);
     setScanProgress(`Scanning blockchain for ${campaign.name}...`);
@@ -393,19 +397,24 @@ export default function AdminPage() {
       const processedInfo = data.stats.processedTxCount && data.stats.totalTxFound 
         ? `\n📊 Processed: ${data.stats.processedTxCount}/${data.stats.totalTxFound} transactions` 
         : '';
+      const incrementalInfo = data.stats.isIncremental && data.stats.newUsersThisScan 
+        ? `\n➕ New users this scan: ${data.stats.newUsersThisScan}` 
+        : '';
+
+      const blockScanInfo = data.stats.scannedBlocks !== data.stats.requestedBlocks
+        ? `📦 ACTUALLY SCANNED: ${data.stats.scannedBlocks} (${data.stats.coveragePercentage}%)\n🎯 REQUESTED: ${data.stats.requestedBlocks}\n${data.partial ? '⚠️ PARTIAL - Not all blocks scanned!' : ''}\n`
+        : `📦 Scanned Blocks: ${data.stats.scannedBlocks} (✅ 100%)\n`;
 
       alert(`✅ Tax Leaderboard ${data.partial ? 'Partially ' : ''}Generated!\n\n` +
-        `👥 Total Users: ${data.stats.totalUsers}\n` +
+        blockScanInfo +
+        `👥 Total Users: ${data.stats.totalUsers}` + incrementalInfo + `\n` +
         `💰 Total Tax: ${data.stats.totalTaxPaid} VIRTUAL\n` +
         `✓ Valid Transactions: ${data.stats.validTxCount}\n` +
-        `⏭️ Skipped: ${data.stats.skippedTxCount}\n` +
-        `📦 Scanned: ${data.stats.scannedBlocks}` +
-        (data.stats.requestedBlocks && data.stats.requestedBlocks !== data.stats.scannedBlocks 
-          ? `\n📦 Requested: ${data.stats.requestedBlocks}` 
-          : '') +
+        `⏭️ Skipped: ${data.stats.skippedTxCount}` +
         processedInfo +
         executionInfo +
         partialWarning +
+        (data.stats.isIncremental ? `\n\n✨ Incremental update: Added to existing leaderboard` : '') +
         `\n\nView at: /tax-leaderboard/${campaign.id}`
       );
 
@@ -419,11 +428,15 @@ export default function AdminPage() {
   };
 
   const handleFastTaxScan = async (campaign) => {
-    const blockInfo = campaign.startBlock && campaign.endBlock 
-      ? `blocks ${campaign.startBlock} to ${campaign.endBlock} (${parseInt(campaign.endBlock) - parseInt(campaign.startBlock)} blocks)`
-      : `the configured range`;
+    if (!campaign.startBlock || !campaign.endBlock) {
+      alert('⚠️ Please configure START and END blocks first!');
+      return;
+    }
     
-    if (!confirm(`🚀 FAST SCAN for "${campaign.name}"?\n\n⚡ This will scan ${blockInfo} at maximum safe speed!\n\n⏱️ Estimated: 5-10 minutes (vs 10+ hours with AUTO-SCAN)\n\n⚠️ Best for historical data. Use AUTO-SCAN for live monitoring.\n\nContinue?`)) return;
+    const totalBlocks = parseInt(campaign.endBlock) - parseInt(campaign.startBlock);
+    const estimatedMinutes = Math.ceil(totalBlocks / 500); // ~500 blocks per 55 seconds
+    
+    if (!confirm(`🚀 FAST SCAN\n\n🎯 START: ${campaign.startBlock}\n🏁 END: ${campaign.endBlock}\n📊 TOTAL: ${totalBlocks} blocks\n\n⏱️ Estimated: ~${estimatedMinutes} minutes\n⚡ Scans ~500-1000 blocks per iteration\n\n✨ Best for historical data backfill.\n\nContinue?`)) return;
 
     setScanning(true);
     setScanProgress(`⚡ Fast scanning blockchain for ${campaign.name}...`);
@@ -447,17 +460,25 @@ export default function AdminPage() {
 
       const partialWarning = data.partial ? `\n\n⚠️ PARTIAL SCAN: ${data.warning}` : '';
       const speedInfo = data.stats.blocksPerSecond ? `\n⚡ Speed: ${data.stats.blocksPerSecond} blocks/sec` : '';
+      const incrementalInfo = data.stats.isIncremental && data.stats.newUsersThisScan 
+        ? `\n➕ New users this scan: ${data.stats.newUsersThisScan}` 
+        : '';
+
+      const scannedInfo = data.stats.scannedBlocks !== data.stats.requestedBlocks 
+        ? `📦 ACTUALLY SCANNED: ${data.stats.scannedBlocks} (${data.stats.coveragePercentage}%)\n🎯 REQUESTED: ${data.stats.requestedBlocks}\n${data.partial ? '⚠️ PARTIAL SCAN' : ''}\n` 
+        : `📦 Scanned Blocks: ${data.stats.scannedBlocks} (✅ 100%)\n`;
 
       alert(`🚀 Fast Scan ${data.partial ? 'Partially ' : ''}Completed!\n\n` +
-        `👥 Total Users: ${data.stats.totalUsers}\n` +
+        scannedInfo +
+        `👥 Total Users: ${data.stats.totalUsers}` + incrementalInfo + `\n` +
         `💰 Total Tax: ${data.stats.totalTaxPaid} VIRTUAL\n` +
         `✓ Valid Transactions: ${data.stats.validTxCount}\n` +
         `⏭️ Skipped: ${data.stats.skippedTxCount}\n` +
-        `📦 Scanned: ${data.stats.scannedBlocks}\n` +
         `📊 Processed: ${data.stats.processedTxCount}/${data.stats.totalTxFound} transactions\n` +
         `⏱️ Time: ${data.stats.executionTime}` +
         speedInfo +
         partialWarning +
+        (data.stats.isIncremental ? `\n\n✨ Incremental update: Added to existing leaderboard` : '') +
         `\n\nView at: /tax-leaderboard/${campaign.id}`
       );
 
@@ -523,11 +544,15 @@ export default function AdminPage() {
 
   // Auto-scan functions
   const handleStartAutoScan = async (campaign) => {
-    const blockInfo = campaign.startBlock && campaign.endBlock 
-      ? `blocks ${campaign.startBlock} to ${campaign.endBlock}`
-      : `current block + 2940 blocks (~98 minutes)`;
+    if (!campaign.startBlock || !campaign.endBlock) {
+      alert('⚠️ Please configure START and END blocks first!');
+      return;
+    }
     
-    if (!confirm(`Start auto-scan for "${campaign.name}"?\n\n📦 Will scan: ${blockInfo}\n\n⚠️ If you had a partial manual scan, auto-scan will continue from where it left off!`)) return;
+    const totalBlocks = parseInt(campaign.endBlock) - parseInt(campaign.startBlock);
+    const estimatedMinutes = Math.ceil(totalBlocks / 20); // 20 blocks per minute
+    
+    if (!confirm(`⚡ AUTO-SCAN (Background)\n\n🎯 START: ${campaign.startBlock}\n🏁 END: ${campaign.endBlock}\n📊 TOTAL: ${totalBlocks} blocks\n\n⏱️ Estimated: ~${estimatedMinutes} minutes\n🔄 Scans 20 blocks per minute\n\n📌 Runs in background via cron job.\n⚠️ Can resume from partial scans.\n\nStart?`)) return;
 
     try {
       const response = await fetch('/api/admin/start-auto-scan', {

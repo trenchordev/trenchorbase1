@@ -97,6 +97,15 @@ export async function POST(request) {
     const totalBlocks = toBlock - fromBlock;
     console.log(`[Fast Scan] Total blocks to scan: ${totalBlocks}`);
 
+    console.log(`\n🚀 ========== FAST TAX SCAN STARTING ==========`);
+    console.log(`🎯 Campaign: ${name} (ID: ${campaignId})`);
+    console.log(`🎯 Start Block: ${fromBlock}`);
+    console.log(`🏁 End Block: ${toBlock}`);
+    console.log(`📊 Total Blocks to Scan: ${totalBlocks}`);
+    console.log(`📊 Chunk Size: ${CHUNK_SIZE}`);
+    console.log(`⚡ RPC: ${infuraKey ? 'Infura (Premium)' : 'Public'}`);
+    console.log(`================================================\n`);
+
     // FAST SCAN PARAMETERS - Optimized for speed without rate limits
     let CHUNK_SIZE = infuraKey ? 500n : 50n; // Larger chunks with premium RPC
     const TX_BATCH_SIZE = 10; // Process multiple txs in parallel
@@ -158,9 +167,13 @@ export async function POST(request) {
           console.warn(`[Fast Scan] Chunk too large, reducing size...`);
           CHUNK_SIZE = CHUNK_SIZE / 2n;
           if (CHUNK_SIZE < 10n) CHUNK_SIZE = 10n;
+          // Don't advance - will retry with smaller chunk
         } else {
-          console.error(`[Fast Scan] Error fetching logs: ${errorMsg}`);
-          currentFrom = currentTo; // Skip problematic chunk
+          console.error(`❌ [Fast Scan] Error fetching logs: ${errorMsg}`);
+          console.error(`⚠️ SKIPPING BLOCKS: ${currentFrom} to ${currentTo} (${currentTo - currentFrom} blocks)`);
+          console.error(`🚨 THIS MEANS SOME TRANSACTIONS MAY BE MISSING!`);
+          console.error(`💡 Suggestion: Check RPC status or retry scan`);
+          currentFrom = currentTo; // Skip problematic chunk only as last resort
         }
       }
     }
@@ -249,28 +262,41 @@ export async function POST(request) {
 
     console.log(`[Fast Scan] Phase 2 complete: ${validCount} valid, ${skippedCount} skipped`);
 
-    // Generate and save leaderboard
-    const leaderboard = Array.from(userTaxPaid.entries())
-      .map(([address, taxPaid]) => ({
-        address,
-        taxPaidRaw: taxPaid.toString(),
-        taxPaidVirtual: Number(taxPaid) / 1e18,
-      }))
-      .sort((a, b) => Number(BigInt(b.taxPaidRaw) - BigInt(a.taxPaidRaw)));
-
+    // INCREMENTAL UPDATE - Add to existing leaderboard instead of replacing
     const redisKey = `tax-leaderboard:${campaignId}`;
     const metaKey = `tax-leaderboard-meta:${campaignId}`;
 
-    await redis.del(redisKey);
+    console.log(`[Fast Scan] Incrementally updating leaderboard with ${userTaxPaid.size} users...`);
 
-    for (const entry of leaderboard) {
+    // Update each user's score (add to existing or create new)
+    for (const [address, taxPaid] of userTaxPaid.entries()) {
+      const taxPaidVirtual = Number(taxPaid) / 1e18;
+      
+      // Get existing score
+      const existingScore = await redis.zscore(redisKey, address);
+      
+      // Add to existing or create new
+      const newScore = existingScore ? parseFloat(existingScore) + taxPaidVirtual : taxPaidVirtual;
+      
       await redis.zadd(redisKey, {
-        score: entry.taxPaidVirtual,
-        member: entry.address,
+        score: newScore,
+        member: address,
       });
     }
 
+    // Get final leaderboard for response
+    const leaderboardData = await redis.zrange(redisKey, 0, -1, { withScores: true, rev: true });
+    const leaderboard = [];
+    for (let i = 0; i < leaderboardData.length; i += 2) {
+      leaderboard.push({
+        address: leaderboardData[i],
+        taxPaidVirtual: parseFloat(leaderboardData[i + 1]),
+      });
+    }
+
+    // Calculate total tax from all users (not just new ones)
     const totalTaxPaid = leaderboard.reduce((sum, e) => sum + e.taxPaidVirtual, 0).toFixed(4);
+    const totalUsers = leaderboard.length;
     const now = Date.now();
 
     await redis.hset(metaKey, {
@@ -279,24 +305,40 @@ export async function POST(request) {
       targetToken: targetToken.toLowerCase(),
       taxWallet: taxWallet.toLowerCase(),
       lastUpdated: now.toString(),
-      totalUsers: leaderboard.length.toString(),
+      totalUsers: totalUsers.toString(),
       totalTaxPaid: totalTaxPaid,
       startBlock: fromBlock.toString(),
       endBlock: currentFrom.toString(),
       validTxCount: validCount.toString(),
       skippedTxCount: skippedCount.toString(),
       scanType: 'fast',
+      lastScanIncremental: 'true',
     });
 
     await redis.set(`tax-campaign-config:${campaignId}`, {
       ...config,
       lastScanned: now,
-      totalUsers: leaderboard.length,
+      totalUsers: totalUsers,
       totalTax: totalTaxPaid,
     });
 
     const totalExecutionTime = Date.now() - startTime;
     const wasPartialScan = currentFrom < toBlock;
+    const actualScannedBlocks = currentFrom - fromBlock;
+
+    console.log(`\n🏁 ========== FAST SCAN COMPLETE ==========`);
+    console.log(`✅ Requested Range: ${fromBlock} - ${toBlock} (${totalBlocks} blocks)`);
+    console.log(`📦 Actually Scanned: ${fromBlock} - ${currentFrom} (${actualScannedBlocks} blocks)`);
+    console.log(`📊 Coverage: ${Math.round((Number(actualScannedBlocks) / Number(totalBlocks)) * 100)}%`);
+    console.log(`👥 Total Users: ${totalUsers}`);
+    console.log(`💰 Total Tax: ${totalTaxPaid} VIRTUAL`);
+    console.log(`✓ Valid Transactions: ${validCount}`);
+    console.log(`⚡ Speed: ${Math.round(Number(actualScannedBlocks) / (totalExecutionTime / 1000))} blocks/sec`);
+    console.log(`⏱️ Execution Time: ${totalExecutionTime}ms`);
+    if (wasPartialScan) {
+      console.log(`⚠️ PARTIAL SCAN: Stopped at block ${currentFrom} (${toBlock - currentFrom} blocks remaining)`);
+    }
+    console.log(`==========================================\n`);
 
     return NextResponse.json({
       success: true,
@@ -304,16 +346,21 @@ export async function POST(request) {
       partial: wasPartialScan,
       warning: wasPartialScan ? 'Partial scan due to time limit. Run again to continue.' : null,
       stats: {
-        totalUsers: leaderboard.length,
+        totalUsers: totalUsers,
         totalTaxPaid,
+        newUsersThisScan: userTaxPaid.size,
         validTxCount: validCount,
         skippedTxCount: skippedCount,
         processedTxCount: validCount + skippedCount,
         totalTxFound: taxTransferLogs.length,
         scannedBlocks: `${fromBlock} - ${currentFrom}`,
         requestedBlocks: `${fromBlock} - ${toBlock}`,
+        actualBlocksScanned: Number(actualScannedBlocks),
+        totalBlocksRequested: Number(totalBlocks),
+        coveragePercentage: Math.round((Number(actualScannedBlocks) / Number(totalBlocks)) * 100),
         executionTime: `${totalExecutionTime}ms`,
         blocksPerSecond: Math.round(Number(currentFrom - fromBlock) / (totalExecutionTime / 1000)),
+        isIncremental: true,
         topPayers: leaderboard.slice(0, 10),
       }
     });

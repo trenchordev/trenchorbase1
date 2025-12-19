@@ -8,7 +8,7 @@ import { redis } from './redis';
 
 const JOB_PREFIX = 'tax-scan-job';
 const ACTIVE_JOBS_SET = 'tax-scan-jobs:active';
-const BLOCKS_PER_SCAN = 5; // Her cron çalışmasında kaç blok taranacak
+const BLOCKS_PER_SCAN = 20; // Her cron çalışmasında kaç blok taranacak (5 → 20 for faster scanning)
 const MAX_BLOCKS_PER_CAMPAIGN = 2940; // 98 dakika * 30 blok/dakika
 const BASE_BLOCK_TIME = 2; // Base network: ~2 saniye/blok
 
