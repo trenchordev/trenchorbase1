@@ -418,6 +418,58 @@ export default function AdminPage() {
     }
   };
 
+  const handleFastTaxScan = async (campaign) => {
+    const blockInfo = campaign.startBlock && campaign.endBlock 
+      ? `blocks ${campaign.startBlock} to ${campaign.endBlock} (${parseInt(campaign.endBlock) - parseInt(campaign.startBlock)} blocks)`
+      : `the configured range`;
+    
+    if (!confirm(`🚀 FAST SCAN for "${campaign.name}"?\n\n⚡ This will scan ${blockInfo} at maximum safe speed!\n\n⏱️ Estimated: 5-10 minutes (vs 10+ hours with AUTO-SCAN)\n\n⚠️ Best for historical data. Use AUTO-SCAN for live monitoring.\n\nContinue?`)) return;
+
+    setScanning(true);
+    setScanProgress(`⚡ Fast scanning blockchain for ${campaign.name}...`);
+
+    try {
+      const response = await fetch('/api/admin/fast-tax-scan', {
+        method: 'POST',
+        credentials: 'include',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ campaignId: campaign.id }),
+      });
+
+      const data = await safeJson(response);
+
+      if (!response.ok) {
+        throw new Error(data.error || 'Fast scan failed');
+      }
+
+      setScanProgress('');
+      setScanning(false);
+
+      const partialWarning = data.partial ? `\n\n⚠️ PARTIAL SCAN: ${data.warning}` : '';
+      const speedInfo = data.stats.blocksPerSecond ? `\n⚡ Speed: ${data.stats.blocksPerSecond} blocks/sec` : '';
+
+      alert(`🚀 Fast Scan ${data.partial ? 'Partially ' : ''}Completed!\n\n` +
+        `👥 Total Users: ${data.stats.totalUsers}\n` +
+        `💰 Total Tax: ${data.stats.totalTaxPaid} VIRTUAL\n` +
+        `✓ Valid Transactions: ${data.stats.validTxCount}\n` +
+        `⏭️ Skipped: ${data.stats.skippedTxCount}\n` +
+        `📦 Scanned: ${data.stats.scannedBlocks}\n` +
+        `📊 Processed: ${data.stats.processedTxCount}/${data.stats.totalTxFound} transactions\n` +
+        `⏱️ Time: ${data.stats.executionTime}` +
+        speedInfo +
+        partialWarning +
+        `\n\nView at: /tax-leaderboard/${campaign.id}`
+      );
+
+      fetchTaxCampaigns();
+    } catch (err) {
+      setScanProgress('');
+      setScanning(false);
+      alert(`❌ Error: ${err.message}`);
+      console.error('Fast scan error:', err);
+    }
+  };
+
   const handleDebugTaxScan = async (campaign) => {
     if (!confirm(`Debug tax scan for "${campaign.name}"? This will show detailed information about what's being scanned.`)) return;
 
@@ -1887,12 +1939,20 @@ export default function AdminPage() {
 
                       <div className="flex gap-2 flex-wrap">
                         {!isScanning && !isCompleted && (
-                          <button
-                            onClick={() => handleStartAutoScan(campaign)}
-                            className="px-3 py-1 text-xs border border-green-400/60 text-green-300 hover:bg-green-500 hover:text-black font-mono rounded transition-colors"
-                          >
-                            ▶ AUTO-SCAN
-                          </button>
+                          <>
+                            <button
+                              onClick={() => handleFastTaxScan(campaign)}
+                              className="px-3 py-1 text-xs border border-orange-400/60 text-orange-300 hover:bg-orange-500 hover:text-black font-mono rounded transition-colors font-bold"
+                            >
+                              🚀 FAST SCAN
+                            </button>
+                            <button
+                              onClick={() => handleStartAutoScan(campaign)}
+                              className="px-3 py-1 text-xs border border-green-400/60 text-green-300 hover:bg-green-500 hover:text-black font-mono rounded transition-colors"
+                            >
+                              ▶ AUTO-SCAN
+                            </button>
+                          </>
                         )}
                         {isScanning && (
                           <button
