@@ -42,6 +42,17 @@ export async function POST(request) {
       }, { status: 409 });
     }
 
+    // Check if there's existing scan progress (from manual scan)
+    const metaKey = `tax-leaderboard-meta:${campaignId}`;
+    const existingMeta = await redis.hgetall(metaKey);
+    let resumeFromBlock = null;
+    
+    if (existingMeta && existingMeta.endBlock) {
+      // If there was a previous scan, we can resume from where it left off
+      resumeFromBlock = BigInt(existingMeta.endBlock);
+      console.log(`[Auto-Scan] Found existing scan progress, can resume from block ${resumeFromBlock}`);
+    }
+
     // Get current block from network
     let rpcUrl = process.env.NEXT_PUBLIC_RPC_URL || 'https://mainnet.base.org';
     const infuraKey = process.env.INFURA_API_KEY || process.env.NEXT_PUBLIC_INFURA_API_KEY;
@@ -64,13 +75,54 @@ export async function POST(request) {
       }, { status: 500 });
     }
 
-    // Create scan job (will scan for next 2940 blocks)
+    // Determine scan start block
+    let scanStartBlock;
+    let scanEndBlock;
+    
+    // Priority 1: Resume from previous scan if available
+    if (resumeFromBlock && config.startBlock && config.endBlock) {
+      const configEndBlock = BigInt(config.endBlock);
+      if (resumeFromBlock < configEndBlock) {
+        scanStartBlock = resumeFromBlock;
+        scanEndBlock = configEndBlock;
+        console.log(`[Auto-Scan] 🔄 RESUMING from previous scan: ${scanStartBlock} -> ${scanEndBlock}`);
+      } else {
+        console.log(`[Auto-Scan] ✅ Previous scan completed full range. Starting fresh.`);
+        scanStartBlock = BigInt(config.startBlock);
+        scanEndBlock = BigInt(config.endBlock);
+      }
+    }
+    // Priority 2: Use campaign config startBlock/endBlock if specified
+    else if (config.startBlock && config.endBlock) {
+      scanStartBlock = BigInt(config.startBlock);
+      scanEndBlock = BigInt(config.endBlock);
+      console.log(`[Auto-Scan] Using campaign config blocks: ${scanStartBlock} -> ${scanEndBlock}`);
+    } 
+    // Priority 3: If only startBlock, use +2940 blocks
+    else if (config.startBlock) {
+      scanStartBlock = BigInt(config.startBlock);
+      scanEndBlock = scanStartBlock + 2940n;
+      // Don't scan beyond current
+      if (scanEndBlock > currentBlock) {
+        scanEndBlock = currentBlock;
+      }
+      console.log(`[Auto-Scan] Using campaign startBlock with +2940: ${scanStartBlock} -> ${scanEndBlock}`);
+    } 
+    // Priority 4: Default to current block
+    else {
+      scanStartBlock = currentBlock;
+      scanEndBlock = currentBlock + 2940n;
+      console.log(`[Auto-Scan] Using current block: ${scanStartBlock} -> ${scanEndBlock}`);
+    }
+
+    // Create scan job with determined blocks
     const job = await createScanJob({
       campaignId,
       targetToken: config.targetToken,
       taxWallet: config.taxWallet,
       name: config.name,
-      startBlock: currentBlock.toString(),
+      startBlock: scanStartBlock.toString(),
+      endBlock: scanEndBlock.toString(),
       logoUrl: config.logoUrl,
     });
 
@@ -79,20 +131,30 @@ export async function POST(request) {
       ...config,
       autoScanEnabled: true,
       autoScanStartedAt: Date.now(),
-      autoScanStartBlock: currentBlock.toString(),
+      autoScanStartBlock: scanStartBlock.toString(),
+      autoScanEndBlock: scanEndBlock.toString(),
     });
 
-    console.log(`[Auto-Scan] Started job for ${campaignId} from block ${currentBlock}`);
+    const totalBlocks = scanEndBlock - scanStartBlock;
+    const estimatedMinutes = Number(totalBlocks) * 2 / 60; // ~2 sec per block
+    const isResuming = resumeFromBlock !== null && resumeFromBlock > 0n;
+
+    console.log(`[Auto-Scan] Started job for ${campaignId}: ${scanStartBlock} -> ${scanEndBlock} (${totalBlocks} blocks)`);
 
     return NextResponse.json({
       success: true,
-      message: `Auto-scan started! Will scan 2940 blocks (~98 minutes)`,
+      message: isResuming 
+        ? `🔄 Auto-scan resumed! Continuing from block ${scanStartBlock} to ${scanEndBlock} (${totalBlocks} blocks remaining)`
+        : `✅ Auto-scan started! Will scan from ${scanStartBlock} to ${scanEndBlock} (${totalBlocks} blocks, ~${Math.ceil(estimatedMinutes)} minutes)`,
       job: {
         campaignId: job.campaignId,
         startBlock: job.startBlock,
         endBlock: job.endBlock,
+        currentBlock: job.currentBlock,
         status: job.status,
-        estimatedCompletionTime: new Date(Date.now() + 98 * 60 * 1000).toISOString(),
+        totalBlocks: totalBlocks.toString(),
+        estimatedMinutes: Math.ceil(estimatedMinutes),
+        isResuming,
       }
     });
 

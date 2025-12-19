@@ -21,6 +21,7 @@ export async function createScanJob({
   taxWallet,
   name,
   startBlock,
+  endBlock,
   logoUrl,
 }) {
   // Validate startBlock
@@ -35,7 +36,20 @@ export async function createScanJob({
     throw new Error(`Failed to parse startBlock as BigInt: ${startBlock}`);
   }
 
-  const endBlock = startBlockBigInt + BigInt(MAX_BLOCKS_PER_CAMPAIGN);
+  // Use provided endBlock or calculate default
+  let endBlockBigInt;
+  if (endBlock && endBlock !== 'undefined' && endBlock !== '') {
+    try {
+      endBlockBigInt = BigInt(endBlock);
+    } catch (err) {
+      throw new Error(`Failed to parse endBlock as BigInt: ${endBlock}`);
+    }
+  } else {
+    // Default: startBlock + MAX_BLOCKS_PER_CAMPAIGN
+    endBlockBigInt = startBlockBigInt + BigInt(MAX_BLOCKS_PER_CAMPAIGN);
+  }
+
+  console.log(`[Job Manager] Creating job: ${startBlockBigInt} -> ${endBlockBigInt} (${endBlockBigInt - startBlockBigInt} blocks)`);
   
   const job = {
     campaignId,
@@ -45,7 +59,7 @@ export async function createScanJob({
     logoUrl: logoUrl || '',
     startBlock: startBlockBigInt.toString(),
     currentBlock: startBlockBigInt.toString(),
-    endBlock: endBlock.toString(),
+    endBlock: endBlockBigInt.toString(),
     status: 'active',
     createdAt: Date.now(),
     lastScanAt: Date.now(),

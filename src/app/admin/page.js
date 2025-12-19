@@ -471,7 +471,11 @@ export default function AdminPage() {
 
   // Auto-scan functions
   const handleStartAutoScan = async (campaign) => {
-    if (!confirm(`Start auto-scan for "${campaign.name}"?\n\nThis will continuously scan for 2940 blocks (~98 minutes) and update the leaderboard in real-time.`)) return;
+    const blockInfo = campaign.startBlock && campaign.endBlock 
+      ? `blocks ${campaign.startBlock} to ${campaign.endBlock}`
+      : `current block + 2940 blocks (~98 minutes)`;
+    
+    if (!confirm(`Start auto-scan for "${campaign.name}"?\n\n📦 Will scan: ${blockInfo}\n\n⚠️ If you had a partial manual scan, auto-scan will continue from where it left off!`)) return;
 
     try {
       const response = await fetch('/api/admin/start-auto-scan', {
@@ -487,12 +491,17 @@ export default function AdminPage() {
         throw new Error(data.error || 'Failed to start auto-scan');
       }
 
-      alert(`✅ Auto-Scan Started!\n\n` +
-        `📦 Start Block: ${data.job.startBlock}\n` +
-        `📦 End Block: ${data.job.endBlock}\n` +
-        `⏱️ Duration: ~98 minutes (2940 blocks)\n\n` +
+      const resumeEmoji = data.job.isResuming ? '🔄' : '✅';
+      const resumeText = data.job.isResuming ? 'RESUMED' : 'STARTED';
+      
+      alert(`${resumeEmoji} Auto-Scan ${resumeText}!\n\n` +
+        `📦 Scanning: ${data.job.startBlock} → ${data.job.endBlock}\n` +
+        `📊 Total Blocks: ${data.job.totalBlocks}\n` +
+        `⏱️ Estimated: ~${data.job.estimatedMinutes} minutes\n` +
+        `🔄 Current: ${data.job.currentBlock}\n\n` +
+        (data.job.isResuming ? `♻️ Continuing from previous partial scan\n\n` : '') +
         `The system will automatically scan every minute.\n` +
-        `Completion: ${data.job.estimatedCompletionTime}`
+        `Check progress below!`
       );
 
       fetchTaxCampaigns();
