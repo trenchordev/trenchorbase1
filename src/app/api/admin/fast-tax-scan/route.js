@@ -97,6 +97,9 @@ export async function POST(request) {
     const totalBlocks = toBlock - fromBlock;
     console.log(`[Fast Scan] Total blocks to scan: ${totalBlocks}`);
 
+    // FAST SCAN PARAMETERS - Optimized for speed without rate limits
+    let CHUNK_SIZE = infuraKey ? 500n : 50n; // Larger chunks with premium RPC
+    
     console.log(`\n🚀 ========== FAST TAX SCAN STARTING ==========`);
     console.log(`🎯 Campaign: ${name} (ID: ${campaignId})`);
     console.log(`🎯 Start Block: ${fromBlock}`);
@@ -105,9 +108,6 @@ export async function POST(request) {
     console.log(`📊 Chunk Size: ${CHUNK_SIZE}`);
     console.log(`⚡ RPC: ${infuraKey ? 'Infura (Premium)' : 'Public'}`);
     console.log(`================================================\n`);
-
-    // FAST SCAN PARAMETERS - Optimized for speed without rate limits
-    let CHUNK_SIZE = infuraKey ? 500n : 50n; // Larger chunks with premium RPC
     const TX_BATCH_SIZE = 10; // Process multiple txs in parallel
     const DELAY_AFTER_BATCH = 50; // Short delay after each batch
     const MAX_SCAN_TIME = 55000; // 55 seconds max
@@ -211,52 +211,69 @@ export async function POST(request) {
         continue;
       }
 
-      try {
-        const receipt = await client.getTransactionReceipt({ hash: txHash });
-        
-        if (!receipt || !receipt.from) {
-          skippedCount++;
-          continue;
-        }
-
-        const userAddress = receipt.from.toLowerCase();
-        let hasTargetTokenInteraction = false;
-
-        for (const txLog of receipt.logs) {
-          if (txLog.topics[0] !== TRANSFER_TOPIC) continue;
-          const tokenAddress = txLog.address.toLowerCase();
-          if (tokenAddress === targetToken.toLowerCase()) {
-            hasTargetTokenInteraction = true;
+      // Get transaction receipt with retry
+      let receipt;
+      let receiptRetries = 0;
+      const MAX_RECEIPT_RETRIES = 10; // Increased for reliability
+      
+      while (!receipt && receiptRetries < MAX_RECEIPT_RETRIES) {
+        try {
+          receipt = await client.getTransactionReceipt({ hash: txHash });
+          
+          if (!receipt || !receipt.from) {
+            receiptRetries++;
+            if (receiptRetries >= MAX_RECEIPT_RETRIES) {
+              console.error(`❌ [Fast Scan] Failed to get receipt for ${txHash} after ${MAX_RECEIPT_RETRIES} retries`);
+              skippedCount++;
+              break;
+            }
+            console.warn(`⚠️ [Fast Scan] Invalid receipt for ${txHash}, retry ${receiptRetries}/${MAX_RECEIPT_RETRIES}`);
+            await new Promise(r => setTimeout(r, 200 * receiptRetries));
+            continue;
+          }
+          break; // Got valid receipt
+        } catch (err) {
+          receiptRetries++;
+          const errMsg = err.message || String(err);
+          
+          if (errMsg.includes('429') || errMsg.includes('Too Many Requests')) {
+            console.warn(`[Fast Scan] Rate limit on receipt fetch, waiting...`);
+            await new Promise(r => setTimeout(r, 2000));
+          } else if (receiptRetries >= MAX_RECEIPT_RETRIES) {
+            console.error(`[Fast Scan] Error fetching receipt for ${txHash}: ${errMsg}`);
+            skippedCount++;
             break;
+          } else {
+            await new Promise(r => setTimeout(r, 300 * receiptRetries));
           }
         }
+      }
+      
+      if (!receipt || !receipt.from) continue;
 
-        if (hasTargetTokenInteraction) {
-          const currentTax = userTaxPaid.get(userAddress) || 0n;
-          userTaxPaid.set(userAddress, currentTax + taxAmount);
-          validCount++;
-        } else {
-          skippedCount++;
-        }
+      const userAddress = receipt.from.toLowerCase();
+      let hasTargetTokenInteraction = false;
 
-        // Batch delay to prevent rate limits
-        if ((validCount + skippedCount) % TX_BATCH_SIZE === 0) {
-          await new Promise(r => setTimeout(r, DELAY_AFTER_BATCH));
+      for (const txLog of receipt.logs) {
+        if (txLog.topics[0] !== TRANSFER_TOPIC) continue;
+        const tokenAddress = txLog.address.toLowerCase();
+        if (tokenAddress === targetToken.toLowerCase()) {
+          hasTargetTokenInteraction = true;
+          break;
         }
+      }
 
-      } catch (err) {
-        const errorMsg = err.message || String(err);
-        
-        if (errorMsg.includes('could not be found') || errorMsg.includes('not be processed')) {
-          skippedCount++;
-        } else if (errorMsg.includes('429')) {
-          console.warn(`[Fast Scan] Rate limit during tx processing, slowing down...`);
-          await new Promise(r => setTimeout(r, 1000));
-          i--; // Retry this transaction
-        } else {
-          console.error(`[Fast Scan] Error processing tx ${txHash}: ${errorMsg}`);
-          skippedCount++;
-        }
+      if (hasTargetTokenInteraction) {
+        const currentTax = userTaxPaid.get(userAddress) || 0n;
+        userTaxPaid.set(userAddress, currentTax + taxAmount);
+        validCount++;
+      } else {
+        skippedCount++;
+      }
+
+      // Batch delay to prevent rate limits
+      if ((validCount + skippedCount) % TX_BATCH_SIZE === 0) {
+        await new Promise(r => setTimeout(r, DELAY_AFTER_BATCH));
       }
     }
 

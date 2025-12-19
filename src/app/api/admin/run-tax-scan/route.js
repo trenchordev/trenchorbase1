@@ -117,7 +117,7 @@ export async function POST(request) {
     }
     
     let currentFrom = fromBlock;
-    const MAX_PROCESSING_TIME = 50000; // 50 seconds max (leave 10s buffer for response)
+    const MAX_PROCESSING_TIME = 55000; // 55 seconds max (leave 5s buffer for response)
     const startTime = Date.now();
 
     console.log(`🔍 ========== MANUEL TAX SCAN STARTING ==========`);
@@ -267,17 +267,23 @@ export async function POST(request) {
 
       let txSuccess = false;
       let txRetries = 0;
-      const MAX_TX_RETRIES = 2; // Reduce retries to save time
+      const MAX_TX_RETRIES = 10; // Increased retries for reliability
 
       while (!txSuccess && txRetries < MAX_TX_RETRIES) {
         try {
           const receipt = await client.getTransactionReceipt({ hash: txHash });
           
           if (!receipt || !receipt.from) {
-            console.warn(`Invalid receipt for tx ${txHash}`);
-            skippedCount++;
-            txSuccess = true; // Skip this tx
-            break;
+            txRetries++;
+            if (txRetries >= MAX_TX_RETRIES) {
+              console.error(`❌ Failed to get receipt for tx ${txHash} after ${MAX_TX_RETRIES} retries`);
+              skippedCount++;
+              txSuccess = true;
+              break;
+            }
+            console.warn(`⚠️ Invalid receipt for tx ${txHash}, retry ${txRetries}/${MAX_TX_RETRIES}`);
+            await new Promise(r => setTimeout(r, 500 * txRetries));
+            continue;
           }
 
           const userAddress = receipt.from.toLowerCase();
