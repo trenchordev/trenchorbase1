@@ -72,35 +72,65 @@ export async function POST(request) {
       : null;
 
     if (safeStartBlock && safeEndBlock) {
-      // Use explicit block range
+      // Use explicit block range - FIXED RANGE
       fromBlock = safeStartBlock;
       toBlock = safeEndBlock;
-      console.log(`Using explicit block range: ${fromBlock} -> ${toBlock}`);
+      console.log(`✅ Using explicit block range: ${fromBlock} -> ${toBlock} (Total: ${toBlock - fromBlock} blocks)`);
     } else if (safeStartBlock) {
-      // Start block given, scan to current
+      // Start block given but no end block - use fixed 2950 block range for consistency
       fromBlock = safeStartBlock;
-      toBlock = currentBlock;
-      console.log(`Using start block with current: ${fromBlock} -> ${toBlock}`);
+      const fixedBlockRange = 2950n; // 98 minutes worth of blocks on Base
+      toBlock = fromBlock + fixedBlockRange;
+      
+      // Don't scan beyond current block
+      if (toBlock > currentBlock) {
+        toBlock = currentBlock;
+      }
+      
+      console.log(`✅ Using start block with fixed range: ${fromBlock} -> ${toBlock} (Total: ${toBlock - fromBlock} blocks)`);
+      console.log(`⚠️ Note: endBlock not specified, using fixed 2950 block range for consistent results`);
     } else {
-      // Use time window (default)
+      // Use time window (default) - will change on each scan
       const timeWindow = (timeWindowMinutes || 99) * 60;
       const estimatedBlocks = Math.ceil(timeWindow / 2); // Base: ~2 saniye/blok
       fromBlock = currentBlock - BigInt(estimatedBlocks);
       toBlock = currentBlock;
-      console.log(`Using time window: ${fromBlock} -> ${toBlock} (${estimatedBlocks} blocks)`);
+      console.log(`⚠️ Using dynamic time window: ${fromBlock} -> ${toBlock} (${estimatedBlocks} blocks)`);
+      console.log(`⚠️ Warning: Results will change on each scan! Specify startBlock and endBlock for consistent results.`);
     }
 
     // Fetch VIRTUAL transfers to tax wallet
     const taxTransferLogs = [];
     const MAX_RETRIES = 5;
+    const totalBlocks = toBlock - fromBlock;
 
-    // Start with very small chunk size to accommodate strict free tier limits
-    let currentChunkSize = infuraKey ? 2000n : 10n;
+    // Adaptive chunk sizing based on total blocks and RPC provider
+    let currentChunkSize;
+    if (totalBlocks > 10000n) {
+      // Very large range - use tiny chunks and warn user
+      console.warn(`⚠️ Large block range detected (${totalBlocks} blocks). This may timeout. Consider using AUTO-SCAN instead.`);
+      currentChunkSize = infuraKey ? 500n : 5n;
+    } else if (totalBlocks > 5000n) {
+      currentChunkSize = infuraKey ? 1000n : 10n;
+    } else {
+      currentChunkSize = infuraKey ? 2000n : 20n;
+    }
+    
     let currentFrom = fromBlock;
+    const MAX_PROCESSING_TIME = 50000; // 50 seconds max (leave 10s buffer for response)
+    const startTime = Date.now();
 
-    console.log(`Starting scan from ${fromBlock} to ${toBlock} (Total: ${toBlock - fromBlock} blocks)`);
+    console.log(`Starting scan from ${fromBlock} to ${toBlock} (Total: ${totalBlocks} blocks, Chunk: ${currentChunkSize})`);
 
     while (currentFrom < toBlock) {
+      // Check timeout to prevent 504 errors
+      const elapsedTime = Date.now() - startTime;
+      if (elapsedTime > MAX_PROCESSING_TIME) {
+        console.warn(`⏱️ Approaching timeout limit (${elapsedTime}ms). Stopping scan at block ${currentFrom}.`);
+        console.warn(`Processed ${taxTransferLogs.length} transactions so far. Use AUTO-SCAN for large ranges.`);
+        break; // Stop scanning but return partial results
+      }
+
       let currentTo = currentFrom + currentChunkSize;
       if (currentTo > toBlock) currentTo = toBlock;
 
@@ -111,7 +141,7 @@ export async function POST(request) {
         try {
           // Log only periodically to avoid spamming server logs
           if (retries > 0 || (Number(currentFrom) % 2000 === 0)) {
-            console.log(`Scanning ${currentFrom} -> ${currentTo} (Size: ${currentTo - currentFrom})`);
+            console.log(`Scanning ${currentFrom} -> ${currentTo} (Size: ${currentTo - currentFrom}, Time: ${elapsedTime}ms)`);
           }
 
           const logs = await client.request({
@@ -188,10 +218,28 @@ export async function POST(request) {
     let skippedCount = 0;
     let processedTxs = 0;
 
-    console.log(`Filtering ${taxTransferLogs.length} candidate transactions...`);
+    const totalTxs = taxTransferLogs.length;
+    console.log(`Filtering ${totalTxs} candidate transactions...`);
+    
+    // If too many transactions and approaching timeout, limit processing
+    const MAX_TX_TO_PROCESS = 200; // Limit to prevent timeout
+    const txsToProcess = totalTxs > MAX_TX_TO_PROCESS ? MAX_TX_TO_PROCESS : totalTxs;
+    
+    if (totalTxs > MAX_TX_TO_PROCESS) {
+      console.warn(`⚠️ Too many transactions (${totalTxs}). Processing first ${MAX_TX_TO_PROCESS} to avoid timeout.`);
+      console.warn(`💡 Use AUTO-SCAN for complete results on large datasets.`);
+    }
 
-    for (const log of taxTransferLogs) {
+    for (let i = 0; i < txsToProcess; i++) {
+      const log = taxTransferLogs[i];
       const txHash = log.transactionHash;
+      
+      // Check timeout during tx processing too
+      const elapsedTime = Date.now() - startTime;
+      if (elapsedTime > MAX_PROCESSING_TIME) {
+        console.warn(`⏱️ Timeout during tx processing at ${processedTxs}/${txsToProcess}. Returning partial results.`);
+        break;
+      }
       
       // Safely parse tax amount with validation
       if (!log.data || log.data === '0x' || log.data === '0x0') {
@@ -211,10 +259,19 @@ export async function POST(request) {
 
       let txSuccess = false;
       let txRetries = 0;
+      const MAX_TX_RETRIES = 2; // Reduce retries to save time
 
-      while (!txSuccess && txRetries < 3) {
+      while (!txSuccess && txRetries < MAX_TX_RETRIES) {
         try {
           const receipt = await client.getTransactionReceipt({ hash: txHash });
+          
+          if (!receipt || !receipt.from) {
+            console.warn(`Invalid receipt for tx ${txHash}`);
+            skippedCount++;
+            txSuccess = true; // Skip this tx
+            break;
+          }
+
           const userAddress = receipt.from.toLowerCase();
 
           // Check if transaction contains target token transfer
@@ -242,17 +299,35 @@ export async function POST(request) {
           txSuccess = true;
           processedTxs++;
 
-          // Small delay every few txs
-          if (processedTxs % 10 === 0) await new Promise(r => setTimeout(r, 20));
+          // Progressive delay to avoid rate limits (more aggressive)
+          if (processedTxs % 5 === 0) await new Promise(r => setTimeout(r, 100));
 
         } catch (err) {
           txRetries++;
-          if (err.message.includes('429')) {
+          const errorMsg = err.message || String(err);
+          
+          // Handle different error types
+          if (errorMsg.includes('429') || errorMsg.includes('Too Many Requests')) {
+            // Rate limit - wait longer
+            const waitTime = 2000 * txRetries;
+            console.warn(`Rate limit on tx ${txHash}, waiting ${waitTime}ms...`);
+            await new Promise(r => setTimeout(r, waitTime));
+          } else if (errorMsg.includes('could not be found') || errorMsg.includes('not be processed')) {
+            // TX not found - likely too new or invalid, skip it
+            console.warn(`TX ${txHash} not found (may be pending or invalid), skipping`);
+            skippedCount++;
+            txSuccess = true; // Skip this tx
+          } else if (errorMsg.includes('timeout') || errorMsg.includes('ETIMEDOUT')) {
+            // Timeout - retry with delay
+            console.warn(`Timeout on tx ${txHash}, retry ${txRetries}/${MAX_TX_RETRIES}`);
             await new Promise(r => setTimeout(r, 1000 * txRetries));
           } else {
-            console.error(`Error processing tx ${txHash}: ${err.message}`);
-            // If not a rate limit, maybe fail this tx
-            if (txRetries >= 2) txSuccess = true; // Skip
+            // Other errors
+            console.error(`Error processing tx ${txHash}: ${errorMsg}`);
+            if (txRetries >= MAX_TX_RETRIES - 1) {
+              skippedCount++;
+              txSuccess = true; // Skip after retries
+            }
           }
         }
       }
@@ -292,7 +367,7 @@ export async function POST(request) {
       totalUsers: leaderboard.length.toString(),
       totalTaxPaid: totalTaxPaid,
       startBlock: fromBlock.toString(),
-      endBlock: toBlock.toString(),
+      endBlock: currentFrom.toString(), // Use actual scanned end block, not requested
       validTxCount: validCount.toString(),
       skippedTxCount: skippedCount.toString(),
     });
@@ -305,14 +380,23 @@ export async function POST(request) {
       totalTax: totalTaxPaid,
     });
 
+    const totalExecutionTime = Date.now() - startTime;
+    const wasPartialScan = processedTxs < totalTxs || (currentFrom < toBlock);
+
     return NextResponse.json({
       success: true,
+      partial: wasPartialScan,
+      warning: wasPartialScan ? 'Partial scan completed due to time constraints. Use AUTO-SCAN for complete results.' : null,
       stats: {
         totalUsers: leaderboard.length,
         totalTaxPaid,
         validTxCount: validCount,
         skippedTxCount: skippedCount,
-        scannedBlocks: `${fromBlock} - ${toBlock}`,
+        processedTxCount: processedTxs,
+        totalTxFound: totalTxs,
+        scannedBlocks: `${fromBlock} - ${currentFrom}`,
+        requestedBlocks: `${fromBlock} - ${toBlock}`,
+        executionTime: `${totalExecutionTime}ms`,
         topPayers: leaderboard.slice(0, 10),
       }
     });

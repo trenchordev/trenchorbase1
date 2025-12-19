@@ -362,7 +362,11 @@ export default function AdminPage() {
   };
 
   const handleRunTaxScript = async (campaign) => {
-    if (!confirm(`Run tax leaderboard scan for "${campaign.name}"?\n\nThis will scan the last ${campaign.timeWindowMinutes || 99} minutes of blockchain data.`)) return;
+    const blockInfo = campaign.startBlock && campaign.endBlock 
+      ? `blocks ${campaign.startBlock} to ${campaign.endBlock} (${parseInt(campaign.endBlock) - parseInt(campaign.startBlock)} blocks)`
+      : `the last ${campaign.timeWindowMinutes || 99} minutes`;
+    
+    if (!confirm(`Run tax leaderboard scan for "${campaign.name}"?\n\n⚠️ This will scan ${blockInfo}.\n\n💡 For consistent results, make sure both START and END blocks are specified in campaign config!`)) return;
 
     setScanning(true);
     setScanProgress(`Scanning blockchain for ${campaign.name}...`);
@@ -384,13 +388,25 @@ export default function AdminPage() {
       setScanProgress('');
       setScanning(false);
 
-      alert(`✅ Tax Leaderboard Generated!\n\n` +
+      const partialWarning = data.partial ? `\n\n⚠️ PARTIAL SCAN: ${data.warning}` : '';
+      const executionInfo = data.stats.executionTime ? `\n⏱️ Execution: ${data.stats.executionTime}` : '';
+      const processedInfo = data.stats.processedTxCount && data.stats.totalTxFound 
+        ? `\n📊 Processed: ${data.stats.processedTxCount}/${data.stats.totalTxFound} transactions` 
+        : '';
+
+      alert(`✅ Tax Leaderboard ${data.partial ? 'Partially ' : ''}Generated!\n\n` +
         `👥 Total Users: ${data.stats.totalUsers}\n` +
         `💰 Total Tax: ${data.stats.totalTaxPaid} VIRTUAL\n` +
         `✓ Valid Transactions: ${data.stats.validTxCount}\n` +
-        `⏭️ Skipped (other projects): ${data.stats.skippedTxCount}\n` +
-        `📦 Blocks: ${data.stats.scannedBlocks}\n\n` +
-        `View at: /tax-leaderboard/${campaign.id}`
+        `⏭️ Skipped: ${data.stats.skippedTxCount}\n` +
+        `📦 Scanned: ${data.stats.scannedBlocks}` +
+        (data.stats.requestedBlocks && data.stats.requestedBlocks !== data.stats.scannedBlocks 
+          ? `\n📦 Requested: ${data.stats.requestedBlocks}` 
+          : '') +
+        processedInfo +
+        executionInfo +
+        partialWarning +
+        `\n\nView at: /tax-leaderboard/${campaign.id}`
       );
 
       fetchTaxCampaigns(); // Refresh to show updated stats
@@ -1727,17 +1743,23 @@ export default function AdminPage() {
                   placeholder="Leave empty to use time window"
                   className="w-full bg-black border border-purple-400/50 px-3 py-2 font-mono text-sm focus:border-purple-300 outline-none rounded"
                 />
+                <div className="text-[10px] opacity-50 font-mono mt-1">
+                  ⚠️ For consistent results, always specify BOTH start and end block
+                </div>
               </div>
 
               <div>
-                <label className="block text-xs mb-1 opacity-70 font-mono">END BLOCK (optional - defaults to current block)</label>
+                <label className="block text-xs mb-1 opacity-70 font-mono">END BLOCK (optional - for fixed range)</label>
                 <input
                   type="number"
                   value={taxForm.endBlock}
                   onChange={(e) => setTaxForm({ ...taxForm, endBlock: e.target.value })}
-                  placeholder="Leave empty for current block"
+                  placeholder="Leave empty to auto-calculate (+2950 blocks)"
                   className="w-full bg-black border border-purple-400/50 px-3 py-2 font-mono text-sm focus:border-purple-300 outline-none rounded"
                 />
+                <div className="text-[10px] opacity-50 font-mono mt-1">
+                  💡 If empty and startBlock given, will use startBlock + 2950 blocks (98 min)
+                </div>
               </div>
 
               <div className="md:col-span-2">

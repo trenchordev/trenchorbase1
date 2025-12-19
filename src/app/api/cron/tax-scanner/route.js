@@ -243,40 +243,70 @@ async function scanBlockRangeForTax(client, targetToken, taxWallet, fromBlock, t
       continue;
     }
 
-    try {
-      const receipt = await client.getTransactionReceipt({ hash: txHash });
-      const userAddress = receipt.from.toLowerCase();
-
-      // Check if transaction contains target token transfer
-      let hasTargetTokenInteraction = false;
-
-      for (const txLog of receipt.logs) {
-        if (txLog.topics[0] !== TRANSFER_TOPIC) continue;
-
-        const tokenAddress = txLog.address.toLowerCase();
-
-        if (tokenAddress === targetToken.toLowerCase()) {
-          hasTargetTokenInteraction = true;
+    // Retry logic for transaction receipt
+    let retryCount = 0;
+    let success = false;
+    
+    while (!success && retryCount < 2) {
+      try {
+        const receipt = await client.getTransactionReceipt({ hash: txHash });
+        
+        if (!receipt || !receipt.from) {
+          console.warn(`[Scan] Invalid receipt for tx ${txHash}`);
+          skippedCount++;
           break;
         }
-      }
 
-      if (hasTargetTokenInteraction) {
-        const currentTax = userTaxPaid.get(userAddress) || 0n;
-        userTaxPaid.set(userAddress, currentTax + taxAmount);
-        validCount++;
-      } else {
-        skippedCount++;
-      }
+        const userAddress = receipt.from.toLowerCase();
 
-      // Small delay to prevent rate limiting
-      if (validCount % 10 === 0) {
-        await new Promise(r => setTimeout(r, 50));
-      }
+        // Check if transaction contains target token transfer
+        let hasTargetTokenInteraction = false;
 
-    } catch (err) {
-      console.error(`[Scan] Error processing tx ${txHash}:`, err.message);
-      // Continue with other transactions
+        for (const txLog of receipt.logs) {
+          if (txLog.topics[0] !== TRANSFER_TOPIC) continue;
+
+          const tokenAddress = txLog.address.toLowerCase();
+
+          if (tokenAddress === targetToken.toLowerCase()) {
+            hasTargetTokenInteraction = true;
+            break;
+          }
+        }
+
+        if (hasTargetTokenInteraction) {
+          const currentTax = userTaxPaid.get(userAddress) || 0n;
+          userTaxPaid.set(userAddress, currentTax + taxAmount);
+          validCount++;
+        } else {
+          skippedCount++;
+        }
+
+        success = true;
+
+        // Aggressive delay to prevent rate limiting
+        if ((validCount + skippedCount) % 5 === 0) {
+          await new Promise(r => setTimeout(r, 100));
+        }
+
+      } catch (err) {
+        retryCount++;
+        const errorMsg = err.message || String(err);
+        
+        if (errorMsg.includes('could not be found') || errorMsg.includes('not be processed')) {
+          console.warn(`[Scan] TX ${txHash} not found (pending/invalid), skipping`);
+          skippedCount++;
+          break;
+        } else if (errorMsg.includes('429') || errorMsg.includes('Too Many Requests')) {
+          console.warn(`[Scan] Rate limit hit, waiting...`);
+          await new Promise(r => setTimeout(r, 2000 * retryCount));
+        } else {
+          console.error(`[Scan] Error processing tx ${txHash}: ${errorMsg}`);
+          if (retryCount >= 1) {
+            skippedCount++;
+            break;
+          }
+        }
+      }
     }
   }
 
