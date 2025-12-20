@@ -56,48 +56,70 @@ function SummaryBar({ token, lp, traders, swaps, scanRange }) {
   );
 }
 
-function LeaderboardTable({ rows, virtualUsdPrice }) {
+function LeaderboardTable({ rows, virtualUsdPrice, sortColumn, sortDirection, onSort, currentPage, itemsPerPage }) {
+  const startIdx = (currentPage - 1) * itemsPerPage;
+  const endIdx = startIdx + itemsPerPage;
+  const paginatedRows = rows.slice(startIdx, endIdx);
+
+  const SortHeader = ({ column, children }) => (
+    <th 
+      className="text-right px-4 py-3 font-normal cursor-pointer hover:bg-[#00ff41]/10 transition-colors select-none"
+      onClick={() => onSort(column)}
+    >
+      <div className="flex items-center justify-end gap-1">
+        {children}
+        {sortColumn === column && (
+          <span className="text-[10px]">
+            {sortDirection === 'asc' ? '↑' : '↓'}
+          </span>
+        )}
+      </div>
+    </th>
+  );
+
   return (
     <div className="rounded-none border border-[#00ff41]/20 bg-black/30 overflow-hidden">
       <div className="overflow-x-auto">
         <table className="w-full text-[12px] font-mono">
-          <thead>
+          <thead className="sticky top-0 z-10">
             <tr className="text-[#00ff41] border-b border-[#00ff41]/20 bg-[#00ff41]/5">
               <th className="text-left px-4 py-3 font-normal">#</th>
               <th className="text-left px-4 py-3 font-normal">TRADER</th>
-              <th className="text-right px-4 py-3 font-normal">VOLUME</th>
-              <th className="text-right px-4 py-3 font-normal">TOKEN</th>
-              <th className="text-right px-4 py-3 font-normal">BUY</th>
-              <th className="text-right px-4 py-3 font-normal">SELL</th>
-              <th className="text-right px-4 py-3 font-normal">NET</th>
-              <th className="text-right px-4 py-3 font-normal">TXS</th>
+              <SortHeader column="volume">VOLUME</SortHeader>
+              <SortHeader column="token">TOKEN</SortHeader>
+              <SortHeader column="buy">BUY</SortHeader>
+              <SortHeader column="sell">SELL</SortHeader>
+              <SortHeader column="net">NET</SortHeader>
+              <SortHeader column="txs">TXS</SortHeader>
             </tr>
           </thead>
           <tbody>
-            {rows.length === 0 ? (
+            {paginatedRows.length === 0 ? (
               <tr>
                 <td colSpan={8} className="px-4 py-10 text-center text-white/50">
                   No data yet.
                 </td>
               </tr>
             ) : (
-              rows.map((r, idx) => (
-                <tr
-                  key={r.address}
-                  className="border-b border-[#00ff41]/10 hover:bg-[#00ff41]/5 transition-colors"
-                >
-                  <td className="px-4 py-3">
-                    {idx === 0 && <span className="text-xl">👑</span>}
-                    {idx === 1 && <span className="text-xl">🥈</span>}
-                    {idx === 2 && <span className="text-xl">🥉</span>}
-                    {idx > 2 && <span className="text-[#00ff41]">{idx + 1}</span>}
-                  </td>
-                  <td className="px-4 py-3">
-                    <div className="text-[#00ff41]">{r.addressShort}</div>
-                    <div className="text-[#00ff41]/40 text-[10px] hidden sm:block">
-                      {r.address}
-                    </div>
-                  </td>
+              paginatedRows.map((r, idx) => {
+                const globalIdx = startIdx + idx;
+                return (
+                  <tr
+                    key={r.address}
+                    className="border-b border-[#00ff41]/10 hover:bg-[#00ff41]/5 transition-colors"
+                  >
+                    <td className="px-4 py-3">
+                      {globalIdx === 0 && <span className="text-xl">👑</span>}
+                      {globalIdx === 1 && <span className="text-xl">🥈</span>}
+                      {globalIdx === 2 && <span className="text-xl">🥉</span>}
+                      {globalIdx > 2 && <span className="text-[#00ff41]">{globalIdx + 1}</span>}
+                    </td>
+                    <td className="px-4 py-3">
+                      <div className="text-[#00ff41]">{r.addressShort}</div>
+                      <div className="text-[#00ff41]/40 text-[10px] hidden sm:block">
+                        {r.address}
+                      </div>
+                    </td>
 
                   {/* VOLUME */}
                   <td className="px-4 py-3 text-right">
@@ -163,6 +185,10 @@ export default function TrbLeaderboardPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState('');
   const [searchAddress, setSearchAddress] = useState('');
+  const [sortColumn, setSortColumn] = useState('volume');
+  const [sortDirection, setSortDirection] = useState('desc');
+  const [currentPage, setCurrentPage] = useState(1);
+  const itemsPerPage = 15;
 
   useEffect(() => {
     let mounted = true;
@@ -235,6 +261,63 @@ export default function TrbLeaderboardPage() {
     );
   }, [data?.leaderboard, searchAddress]);
 
+  const sortedLeaderboard = useMemo(() => {
+    if (!filteredLeaderboard.length) return [];
+    
+    const sorted = [...filteredLeaderboard].sort((a, b) => {
+      let aVal, bVal;
+      
+      switch (sortColumn) {
+        case 'volume':
+          aVal = a.volVirtual || 0;
+          bVal = b.volVirtual || 0;
+          break;
+        case 'token':
+          aVal = a.volTrb || 0;
+          bVal = b.volTrb || 0;
+          break;
+        case 'buy':
+          aVal = a.buyVirtual || 0;
+          bVal = b.buyVirtual || 0;
+          break;
+        case 'sell':
+          aVal = a.sellVirtual || 0;
+          bVal = b.sellVirtual || 0;
+          break;
+        case 'net':
+          aVal = a.netVirtual || 0;
+          bVal = b.netVirtual || 0;
+          break;
+        case 'txs':
+          aVal = a.txs || 0;
+          bVal = b.txs || 0;
+          break;
+        default:
+          return 0;
+      }
+      
+      if (sortDirection === 'asc') {
+        return aVal - bVal;
+      } else {
+        return bVal - aVal;
+      }
+    });
+    
+    return sorted;
+  }, [filteredLeaderboard, sortColumn, sortDirection]);
+
+  const totalPages = Math.ceil(sortedLeaderboard.length / itemsPerPage);
+
+  const handleSort = (column) => {
+    if (sortColumn === column) {
+      setSortDirection(sortDirection === 'asc' ? 'desc' : 'asc');
+    } else {
+      setSortColumn(column);
+      setSortDirection('desc');
+    }
+    setCurrentPage(1);
+  };
+
   if (loading) {
     return (
       <div className="min-h-screen flex items-center justify-center">
@@ -263,53 +346,84 @@ export default function TrbLeaderboardPage() {
   return (
     <AccessGuard>
       <div className="min-h-screen p-6 sm:p-8 max-w-7xl mx-auto transform lg:translate-x-24 font-sans">
-      <div className="flex items-center justify-between mb-3">
-        <Link
-          href="/terminal"
-          className="text-xs font-mono text-[#00ff41]/70 hover:text-[#00ff41]"
-        >
-          {'<'} BACK TO TOKENS
-        </Link>
-      </div>
-
-      <div className="flex items-center justify-center mb-4">
-        <div className="text-center">
-          <div className="flex items-center justify-center gap-2 mb-1">
-            <span className="w-2 h-2 rounded-full bg-[#00ff41] animate-pulse" />
-            <span className="text-[#00ff41] text-xs font-mono">LIVE</span>
-          </div>
-          <div className="text-4xl sm:text-5xl font-bold neon-text">{'>'}TRB</div>
-          <div className="text-[#00ff41]/70 text-xs font-mono mt-1">
-            [ TRADING LEADERBOARD ]
-          </div>
-          <a
-            href="https://app.virtuals.io/prototypes/0x2baaD38A80FfDd8D195d2B4eef0bC8E0f319c63a"
-            target="_blank"
-            rel="noopener noreferrer"
-            className="mt-4 inline-flex items-center gap-2 px-6 py-3 bg-[#00ff41] text-black font-bold text-sm rounded-lg hover:bg-[#00ff41]/80 transition-all hover:scale-105 shadow-lg shadow-[#00ff41]/20"
+        <div className="flex items-center justify-between mb-3">
+          <Link
+            href="/terminal"
+            className="text-xs font-mono text-[#00ff41]/70 hover:text-[#00ff41]"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
-            </svg>
-            Trade Now on Virtuals
-          </a>
+            {'<'} BACK TO TOKENS
+          </Link>
         </div>
-      </div>
 
-      <SummaryBar
-        token={meta.tokenAddress}
-        lp={meta.lpLikeAddress}
-        traders={stats.traders}
-        swaps={stats.transfers}
-        scanRange={scanRange}
-      />
+        <div className="flex items-center justify-center mb-4">
+          <div className="text-center">
+            <div className="flex items-center justify-center gap-2 mb-1">
+              <span className="w-2 h-2 rounded-full bg-[#00ff41] animate-pulse" />
+              <span className="text-[#00ff41] text-xs font-mono">LIVE</span>
+            </div>
+            <div className="text-4xl sm:text-5xl font-bold neon-text">{'>'}TRB</div>
+            <div className="text-[#00ff41]/70 text-xs font-mono mt-1">
+              [ TRADING LEADERBOARD ]
+            </div>
+            <a
+              href="https://app.virtuals.io/prototypes/0x2baaD38A80FfDd8D195d2B4eef0bC8E0f319c63a"
+              target="_blank"
+              rel="noopener noreferrer"
+              className="mt-4 inline-flex items-center gap-2 px-6 py-3 bg-[#00ff41] text-black font-bold text-sm rounded-lg hover:bg-[#00ff41]/80 transition-all hover:scale-105 shadow-lg shadow-[#00ff41]/20"
+            >
+              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6" />
+              </svg>
+              Trade Now on Virtuals
+            </a>
+          </div>
+        </div>
 
-      <div className="grid gap-6 lg:grid-cols-2">
+        <SummaryBar
+          token={meta.tokenAddress}
+          lp={meta.lpLikeAddress}
+          traders={stats.traders}
+          swaps={stats.transfers}
+          scanRange={scanRange}
+        />
+
+        {/* Chart Section - Full Width */}
+        <div className="mb-6">
+          <div className="rounded-xl border border-[#00ff41]/20 bg-black/30 overflow-hidden">
+            <div className="px-4 py-2 border-b border-[#00ff41]/20 bg-[#00ff41]/5">
+              <div className="flex items-center justify-between">
+                <span className="text-[#00ff41] text-xs font-mono">TRB PRICE CHART</span>
+                <a
+                  href="https://www.defined.fi/base/0x367c2522a452efc180cc93855d98dbd8668488d4?quoteToken=token0"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  className="text-[#00ff41]/60 hover:text-[#00ff41] text-[10px] font-mono"
+                >
+                  Open Full ↗
+                </a>
+              </div>
+            </div>
+            <div style={{ height: '500px' }}>
+              <iframe
+                height="100%"
+                width="100%"
+                id="defined-embed"
+                title="Defined Embed"
+                src="https://www.defined.fi/base/0x367c2522a452efc180cc93855d98dbd8668488d4/embed?quoteToken=token0&hideTxTable=1&hideSidebar=0&hideChart=0&hideChartEmptyBars=1&chartSmoothing=0&embedColorMode=DARK"
+                className="border-0"
+                allow="clipboard-write"
+              />
+            </div>
+          </div>
+        </div>
+
+        {/* Leaderboard Section - Full Width */}
         <div>
           {/* Search Box */}
-          <div className="flex items-center justify-between mb-3 gap-4">
+          <div className="flex items-center justify-between mb-3 gap-4 flex-wrap">
             <div className="text-[#00ff41] text-xs font-mono">
-              Showing {filteredLeaderboard.length} / {stats.traders || 0} traders
+              Showing {sortedLeaderboard.length} / {stats.traders || 0} traders
+              {currentPage > 1 && ` (Page ${currentPage}/${totalPages})`}
             </div>
             <div className="relative">
               <svg
@@ -324,47 +438,49 @@ export default function TrbLeaderboardPage() {
                 type="text"
                 placeholder="Search address..."
                 value={searchAddress}
-                onChange={(e) => setSearchAddress(e.target.value)}
+                onChange={(e) => { setSearchAddress(e.target.value); setCurrentPage(1); }}
                 className="w-48 sm:w-64 px-3 py-2 pl-10 bg-black/50 border border-[#00ff41]/30 rounded-lg text-[#00ff41] text-xs font-mono placeholder:text-[#00ff41]/40 focus:outline-none focus:border-[#00ff41]/60"
               />
             </div>
           </div>
-          <LeaderboardTable
-            rows={filteredLeaderboard}
-            virtualUsdPrice={virtualUsdPrice}
-          />
-          <div className="mt-3 text-center text-[11px] text-[#00ff41]/60 font-mono">
-            Auto-refresh: 5m | VIRTUAL: ${virtualUsdPrice ? virtualUsdPrice.toFixed(4) : '0.0000'}
-          </div>
-        </div>
 
-        <div className="rounded-xl border border-[#00ff41]/20 bg-black/30 overflow-hidden w-full flex flex-col self-stretch">
-          <div className="px-4 py-2 border-b border-[#00ff41]/20 bg-[#00ff41]/5">
-            <div className="flex items-center justify-between">
-              <span className="text-[#00ff41] text-xs font-mono">TRB PRICE CHART</span>
-              <a
-                href="https://www.defined.fi/base/0x367c2522a452efc180cc93855d98dbd8668488d4?quoteToken=token0"
-                target="_blank"
-                rel="noopener noreferrer"
-                className="text-[#00ff41]/60 hover:text-[#00ff41] text-[10px] font-mono"
+          <LeaderboardTable
+            rows={sortedLeaderboard}
+            virtualUsdPrice={virtualUsdPrice}
+            sortColumn={sortColumn}
+            sortDirection={sortDirection}
+            onSort={handleSort}
+            currentPage={currentPage}
+            itemsPerPage={itemsPerPage}
+          />
+
+          {/* Pagination */}
+          {totalPages > 1 && (
+            <div className="mt-4 flex items-center justify-center gap-2">
+              <button
+                onClick={() => setCurrentPage(Math.max(1, currentPage - 1))}
+                disabled={currentPage === 1}
+                className="px-3 py-1 bg-[#00ff41]/10 border border-[#00ff41]/30 rounded text-[#00ff41] text-xs font-mono disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#00ff41]/20 transition-colors"
               >
-                Open Full ↗
-              </a>
+                ← Prev
+              </button>
+              <span className="text-[#00ff41] text-xs font-mono px-2">
+                Page {currentPage} of {totalPages}
+              </span>
+              <button
+                onClick={() => setCurrentPage(Math.min(totalPages, currentPage + 1))}
+                disabled={currentPage === totalPages}
+                className="px-3 py-1 bg-[#00ff41]/10 border border-[#00ff41]/30 rounded text-[#00ff41] text-xs font-mono disabled:opacity-30 disabled:cursor-not-allowed hover:bg-[#00ff41]/20 transition-colors"
+              >
+                Next →
+              </button>
             </div>
-          </div>
-          <div className="lg:max-w-none flex-1" style={{ minHeight: '500px' }}>
-            <iframe
-              height="100%"
-              width="100%"
-              id="defined-embed"
-              title="Defined Embed"
-              src="https://www.defined.fi/base/0x367c2522a452efc180cc93855d98dbd8668488d4/embed?quoteToken=token0&hideTxTable=1&hideSidebar=0&hideChart=0&hideChartEmptyBars=1&chartSmoothing=0&embedColorMode=DARK"
-              className="border-2 h-full"
-              allow="clipboard-write"
-            />
+          )}
+
+          <div className="mt-3 text-center text-[11px] text-[#00ff41]/60 font-mono">
+            Auto-refresh: 30s | VIRTUAL: ${virtualUsdPrice ? virtualUsdPrice.toFixed(4) : '0.0000'}
           </div>
         </div>
-      </div>
       </div>
     </AccessGuard>
   );

@@ -97,8 +97,9 @@ export async function POST(request) {
     const totalBlocks = toBlock - fromBlock;
     console.log(`[Fast Scan] Total blocks to scan: ${totalBlocks}`);
 
-    // FAST SCAN PARAMETERS - Optimized for speed without rate limits
-    let CHUNK_SIZE = infuraKey ? 500n : 50n; // Larger chunks with premium RPC
+    // FAST SCAN PARAMETERS - Conservative to avoid rate limits
+    // Reduced chunk sizes for reliability
+    let CHUNK_SIZE = infuraKey ? 200n : 25n; // Smaller chunks to prevent rate limit errors
     
     console.log(`\n🚀 ========== FAST TAX SCAN STARTING ==========`);
     console.log(`🎯 Campaign: ${name} (ID: ${campaignId})`);
@@ -151,22 +152,22 @@ export async function POST(request) {
 
         currentFrom = currentTo;
         
-        // Minimal delay to prevent rate limits
-        if (taxTransferLogs.length % 5 === 0) {
-          await new Promise(r => setTimeout(r, 20));
-        }
+        // Progressive delay - more delay if finding many logs
+        const delayTime = logs.length > 10 ? 200 : logs.length > 5 ? 100 : 50;
+        await new Promise(r => setTimeout(r, delayTime));
 
       } catch (err) {
         const errorMsg = err.message || String(err);
         
         if (errorMsg.includes('429') || errorMsg.includes('Too Many Requests')) {
-          console.warn(`[Fast Scan] Rate limit hit, backing off...`);
-          await new Promise(r => setTimeout(r, 2000));
+          console.warn(`[Fast Scan] Rate limit hit, backing off for 3 seconds...`);
+          await new Promise(r => setTimeout(r, 3000));
           // Don't advance currentFrom, retry same chunk
         } else if (errorMsg.includes('block range') || errorMsg.includes('limit')) {
-          console.warn(`[Fast Scan] Chunk too large, reducing size...`);
+          console.warn(`[Fast Scan] Chunk too large (${CHUNK_SIZE}), reducing size...`);
           CHUNK_SIZE = CHUNK_SIZE / 2n;
-          if (CHUNK_SIZE < 10n) CHUNK_SIZE = 10n;
+          if (CHUNK_SIZE < 5n) CHUNK_SIZE = 5n;
+          console.warn(`[Fast Scan] New chunk size: ${CHUNK_SIZE}`);
           // Don't advance - will retry with smaller chunk
         } else {
           console.error(`❌ [Fast Scan] Error fetching logs: ${errorMsg}`);
