@@ -121,56 +121,57 @@ function LeaderboardTable({ rows, virtualUsdPrice, sortColumn, sortDirection, on
                       </div>
                     </td>
 
-                  {/* VOLUME */}
-                  <td className="px-4 py-3 text-right">
-                    <div className="text-[#00ff41]">
-                      $
-                      {virtualUsdPrice && r.volVirtual
-                        ? formatNum(r.volVirtual * virtualUsdPrice)
-                        : '0.00'}
-                    </div>
-                    <div className="text-cyan-400 text-[10px]">{formatNum(r.volVirtual)} V</div>
-                  </td>
+                    {/* VOLUME */}
+                    <td className="px-4 py-3 text-right">
+                      <div className="text-[#00ff41]">
+                        $
+                        {virtualUsdPrice && r.volVirtual
+                          ? formatNum(r.volVirtual * virtualUsdPrice)
+                          : '0.00'}
+                      </div>
+                      <div className="text-cyan-400 text-[10px]">{formatNum(r.volVirtual)} V</div>
+                    </td>
 
-                  {/* TOKEN */}
-                  <td className="px-4 py-3 text-right text-white">{formatToken(r.volTrb)}</td>
+                    {/* TOKEN */}
+                    <td className="px-4 py-3 text-right text-white">{formatToken(r.volTrb)}</td>
 
-                  {/* BUY */}
-                  <td className="px-4 py-3 text-right">
-                    <div className="text-[#00ff41]">
-                      $
-                      {virtualUsdPrice && r.buyVirtual
-                        ? formatNum(r.buyVirtual * virtualUsdPrice)
-                        : '0.00'}
-                    </div>
-                    <div className="text-cyan-400 text-[10px]">{formatNum(r.buyVirtual)} V</div>
-                  </td>
+                    {/* BUY */}
+                    <td className="px-4 py-3 text-right">
+                      <div className="text-[#00ff41]">
+                        $
+                        {virtualUsdPrice && r.buyVirtual
+                          ? formatNum(r.buyVirtual * virtualUsdPrice)
+                          : '0.00'}
+                      </div>
+                      <div className="text-cyan-400 text-[10px]">{formatNum(r.buyVirtual)} V</div>
+                    </td>
 
-                  {/* SELL */}
-                  <td className="px-4 py-3 text-right">
-                    <div className="text-[#00ff41]">
-                      $
-                      {virtualUsdPrice && r.sellVirtual
-                        ? formatNum(r.sellVirtual * virtualUsdPrice)
-                        : '0.00'}
-                    </div>
-                    <div className="text-cyan-400 text-[10px]">{formatNum(r.sellVirtual)} V</div>
-                  </td>
+                    {/* SELL */}
+                    <td className="px-4 py-3 text-right">
+                      <div className="text-[#00ff41]">
+                        $
+                        {virtualUsdPrice && r.sellVirtual
+                          ? formatNum(r.sellVirtual * virtualUsdPrice)
+                          : '0.00'}
+                      </div>
+                      <div className="text-cyan-400 text-[10px]">{formatNum(r.sellVirtual)} V</div>
+                    </td>
 
-                  {/* NET */}
-                  <td className="px-4 py-3 text-right">
-                    <div className={r.netVirtual >= 0 ? 'text-[#00ff41]' : 'text-red-500'}>
-                      $
-                      {virtualUsdPrice && r.netVirtual
-                        ? formatNum(Math.abs(r.netVirtual * virtualUsdPrice))
-                        : '0.00'}
-                    </div>
-                    <div className="text-cyan-400 text-[10px]">{formatNum(r.netVirtual)} V</div>
-                  </td>
+                    {/* NET */}
+                    <td className="px-4 py-3 text-right">
+                      <div className={r.netVirtual >= 0 ? 'text-[#00ff41]' : 'text-red-500'}>
+                        $
+                        {virtualUsdPrice && r.netVirtual
+                          ? formatNum(Math.abs(r.netVirtual * virtualUsdPrice))
+                          : '0.00'}
+                      </div>
+                      <div className="text-cyan-400 text-[10px]">{formatNum(r.netVirtual)} V</div>
+                    </td>
 
-                  <td className="px-4 py-3 text-right text-white">{r.txs || 0}</td>
-                </tr>
-              ))
+                    <td className="px-4 py-3 text-right text-white">{r.txs || 0}</td>
+                  </tr>
+                );
+              })
             )}
           </tbody>
         </table>
