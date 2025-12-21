@@ -361,6 +361,35 @@ export default function AdminPage() {
     }
   };
 
+  const handleResetTaxCampaign = async (id) => {
+    if (!confirm(`⚠️ RESET tax campaign "${id}"?\n\nThis will clear:\n- Leaderboard data\n- Processed transactions (duplicates)\n- Job status\n\nCampaign config will remain.`)) return;
+    
+    try {
+      const response = await fetch('/api/admin/reset-tax-campaign', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        credentials: 'include',
+        body: JSON.stringify({ campaignId: id }),
+      });
+
+      if (response.status === 401) {
+        handleUnauthorized();
+        return;
+      }
+
+      const result = await safeJson(response);
+      if (result.success) {
+        alert(`✅ Reset complete. Deleted ${result.deletedKeys?.length || 0} keys.`);
+        fetchTaxCampaigns();
+      } else {
+        alert(`❌ Reset failed: ${result.error}`);
+      }
+    } catch (err) {
+      console.error('Error resetting tax campaign:', err);
+      alert('Error: ' + err.message);
+    }
+  };
+
   const handleRunTaxScript = async (campaign) => {
     let blockInfo, totalBlocks;
     if (campaign.startBlock && campaign.endBlock) {
@@ -2015,6 +2044,12 @@ export default function AdminPage() {
                         >
                           VIEW
                         </a>
+                        <button
+                          onClick={() => handleResetTaxCampaign(campaign.id)}
+                          className="px-3 py-1 text-xs border border-orange-400/60 text-orange-300 hover:bg-orange-500 hover:text-black font-mono rounded transition-colors"
+                        >
+                          RESET DATA
+                        </button>
                         <button
                           onClick={() => handleDeleteTaxCampaign(campaign.id)}
                           className="px-3 py-1 text-xs border border-red-400/60 text-red-300 hover:bg-red-500 hover:text-black font-mono rounded transition-colors"
