@@ -237,6 +237,10 @@ export async function POST(request) {
     // Check for already processed transactions to prevent duplicates
     const processedTxSetKey = `tax-campaign:${campaignId}:processed-txs`;
     
+    console.log(`🔍 [DUPLICATE CHECK] Checking processed transactions in key: ${processedTxSetKey}`);
+    const processedTxCount = await redis.scard(processedTxSetKey);
+    console.log(`📊 [DUPLICATE CHECK] Already processed transactions: ${processedTxCount}`);
+    
     // NO LIMIT - Process all transactions found
     // Incremental updates mean we can process as many as possible in 50s
     // and continue in next scan if timeout occurs
@@ -249,10 +253,12 @@ export async function POST(request) {
       // CRITICAL: Check if this transaction was already processed
       const alreadyProcessed = await redis.sismember(processedTxSetKey, txHash);
       if (alreadyProcessed) {
-        console.log(`⏭️ Skipping duplicate transaction: ${txHash}`);
+        console.log(`⏭️ [DUPLICATE] Skipping already processed transaction: ${txHash}`);
         duplicateCount++;
         continue;
       }
+      
+      console.log(`✅ [NEW TX] Processing transaction: ${txHash}`);
       
       // Check timeout during tx processing too
       const elapsedTime = Date.now() - startTime;
@@ -315,12 +321,14 @@ export async function POST(request) {
           }
 
           if (hasTargetTokenInteraction) {
+            // CRITICAL: Mark transaction as processed FIRST (before adding to map)
+            // This ensures that if scan is run again, this tx won't be re-added
+            await redis.sadd(processedTxSetKey, txHash);
+            console.log(`💾 [REDIS] Marked transaction as processed: ${txHash}`);
+            
             const currentTax = userTaxPaid.get(userAddress) || 0n;
             userTaxPaid.set(userAddress, currentTax + taxAmount);
             validCount++;
-            
-            // Mark transaction as processed to prevent duplicates
-            await redis.sadd(processedTxSetKey, txHash);
           } else {
             skippedCount++;
           }
