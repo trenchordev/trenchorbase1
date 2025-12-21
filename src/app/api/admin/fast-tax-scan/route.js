@@ -187,6 +187,10 @@ export async function POST(request) {
     const userTaxPaid = new Map();
     let validCount = 0;
     let skippedCount = 0;
+    let duplicateCount = 0;
+    
+    // Check for already processed transactions to prevent duplicates
+    const processedTxSetKey = `tax-campaign:${campaignId}:processed-txs`;
 
     for (let i = 0; i < taxTransferLogs.length; i++) {
       const elapsed = Date.now() - startTime;
@@ -197,6 +201,14 @@ export async function POST(request) {
 
       const log = taxTransferLogs[i];
       const txHash = log.transactionHash;
+      
+      // CRITICAL: Check if this transaction was already processed
+      const alreadyProcessed = await redis.sismember(processedTxSetKey, txHash);
+      if (alreadyProcessed) {
+        console.log(`[Fast Scan] ⏭️ Skipping duplicate transaction: ${txHash}`);
+        duplicateCount++;
+        continue;
+      }
 
       // Validate log data
       if (!log.data || log.data === '0x' || log.data === '0x0') {
@@ -268,6 +280,9 @@ export async function POST(request) {
         const currentTax = userTaxPaid.get(userAddress) || 0n;
         userTaxPaid.set(userAddress, currentTax + taxAmount);
         validCount++;
+        
+        // Mark transaction as processed to prevent duplicates
+        await redis.sadd(processedTxSetKey, txHash);
       } else {
         skippedCount++;
       }
@@ -351,6 +366,7 @@ export async function POST(request) {
     console.log(`👥 Total Users: ${totalUsers}`);
     console.log(`💰 Total Tax: ${totalTaxPaid} VIRTUAL`);
     console.log(`✓ Valid Transactions: ${validCount}`);
+    console.log(`⏭️ Duplicate Transactions: ${duplicateCount}`);
     console.log(`⚡ Speed: ${Math.round(Number(actualScannedBlocks) / (totalExecutionTime / 1000))} blocks/sec`);
     console.log(`⏱️ Execution Time: ${totalExecutionTime}ms`);
     if (wasPartialScan) {
@@ -369,6 +385,7 @@ export async function POST(request) {
         newUsersThisScan: userTaxPaid.size,
         validTxCount: validCount,
         skippedTxCount: skippedCount,
+        duplicateTxCount: duplicateCount,
         processedTxCount: validCount + skippedCount,
         totalTxFound: taxTransferLogs.length,
         scannedBlocks: `${fromBlock} - ${currentFrom}`,

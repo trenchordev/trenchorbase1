@@ -118,10 +118,11 @@ export async function GET(request) {
           job.targetToken,
           job.taxWallet,
           scanRange.from,
-          scanRange.to
+          scanRange.to,
+          job.campaignId
         );
 
-        console.log(`[Cron] Job ${job.campaignId}: Scan complete - Found ${taxData.userTaxPaid.size} users, ${taxData.validCount} valid, ${taxData.skippedCount} skipped`);
+        console.log(`[Cron] Job ${job.campaignId}: Scan complete - Found ${taxData.userTaxPaid.size} users, ${taxData.validCount} valid, ${taxData.skippedCount} skipped, ${taxData.duplicateCount || 0} duplicates`);
 
         // Update leaderboard with new data
         if (taxData.userTaxPaid.size > 0) {
@@ -188,7 +189,7 @@ export async function GET(request) {
 /**
  * Scan a block range for tax payments
  */
-async function scanBlockRangeForTax(client, targetToken, taxWallet, fromBlock, toBlock) {
+async function scanBlockRangeForTax(client, targetToken, taxWallet, fromBlock, toBlock, campaignId) {
   const taxTransferLogs = [];
   
   try {
@@ -221,11 +222,23 @@ async function scanBlockRangeForTax(client, targetToken, taxWallet, fromBlock, t
   const userTaxPaid = new Map();
   let validCount = 0;
   let skippedCount = 0;
+  let duplicateCount = 0;
+  
+  // Check for already processed transactions
+  const processedTxSetKey = `tax-campaign:${campaignId}:processed-txs`;
 
   console.log(`[Scan] Processing ${taxTransferLogs.length} transactions for target token ${targetToken}`);
 
   for (const log of taxTransferLogs) {
     const txHash = log.transactionHash;
+    
+    // CRITICAL: Check if already processed
+    const alreadyProcessed = await redis.sismember(processedTxSetKey, txHash);
+    if (alreadyProcessed) {
+      console.log(`[Cron] ⏭️ Skipping duplicate transaction: ${txHash}`);
+      duplicateCount++;
+      continue;
+    }
     
     // Safely parse tax amount with validation
     if (!log.data || log.data === '0x' || log.data === '0x0') {
@@ -277,6 +290,9 @@ async function scanBlockRangeForTax(client, targetToken, taxWallet, fromBlock, t
           const currentTax = userTaxPaid.get(userAddress) || 0n;
           userTaxPaid.set(userAddress, currentTax + taxAmount);
           validCount++;
+          
+          // Mark transaction as processed
+          await redis.sadd(processedTxSetKey, txHash);
         } else {
           skippedCount++;
         }
@@ -314,6 +330,7 @@ async function scanBlockRangeForTax(client, targetToken, taxWallet, fromBlock, t
     userTaxPaid,
     validCount,
     skippedCount,
+    duplicateCount,
   };
 }
 

@@ -229,9 +229,13 @@ export async function POST(request) {
     let validCount = 0;
     let skippedCount = 0;
     let processedTxs = 0;
+    let duplicateCount = 0;
 
     const totalTxs = taxTransferLogs.length;
     console.log(`Filtering ${totalTxs} candidate transactions...`);
+    
+    // Check for already processed transactions to prevent duplicates
+    const processedTxSetKey = `tax-campaign:${campaignId}:processed-txs`;
     
     // NO LIMIT - Process all transactions found
     // Incremental updates mean we can process as many as possible in 50s
@@ -241,6 +245,14 @@ export async function POST(request) {
     for (let i = 0; i < txsToProcess; i++) {
       const log = taxTransferLogs[i];
       const txHash = log.transactionHash;
+      
+      // CRITICAL: Check if this transaction was already processed
+      const alreadyProcessed = await redis.sismember(processedTxSetKey, txHash);
+      if (alreadyProcessed) {
+        console.log(`⏭️ Skipping duplicate transaction: ${txHash}`);
+        duplicateCount++;
+        continue;
+      }
       
       // Check timeout during tx processing too
       const elapsedTime = Date.now() - startTime;
@@ -306,6 +318,9 @@ export async function POST(request) {
             const currentTax = userTaxPaid.get(userAddress) || 0n;
             userTaxPaid.set(userAddress, currentTax + taxAmount);
             validCount++;
+            
+            // Mark transaction as processed to prevent duplicates
+            await redis.sadd(processedTxSetKey, txHash);
           } else {
             skippedCount++;
           }
@@ -418,6 +433,7 @@ export async function POST(request) {
     console.log(`👥 Total Users: ${totalUsers}`);
     console.log(`💰 Total Tax: ${totalTaxPaid} VIRTUAL`);
     console.log(`✓ Valid Transactions: ${validCount}`);
+    console.log(`⏭️ Duplicate Transactions: ${duplicateCount}`);
     console.log(`⏱️ Execution Time: ${totalExecutionTime}ms`);
     if (wasPartialScan) {
       console.log(`⚠️ PARTIAL SCAN: Stopped at block ${currentFrom} (${toBlock - currentFrom} blocks remaining)`);
@@ -434,6 +450,7 @@ export async function POST(request) {
         newUsersThisScan: userTaxPaid.size,
         validTxCount: validCount,
         skippedTxCount: skippedCount,
+        duplicateTxCount: duplicateCount,
         processedTxCount: processedTxs,
         totalTxFound: totalTxs,
         scannedBlocks: `${fromBlock} - ${currentFrom}`,
