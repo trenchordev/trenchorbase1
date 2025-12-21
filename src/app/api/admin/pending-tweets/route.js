@@ -3,14 +3,17 @@ import { redis } from '@/lib/redis';
 
 export async function GET(request) {
   try {
-    // Get all active campaigns
-    const campaignKeys = await redis.keys('campaign:*');
+    // Get all active trenchshare campaigns
+    const campaignKeys = await redis.keys('trenchshare:campaign:*');
     const campaigns = [];
     
     for (const key of campaignKeys) {
-      const campaign = await redis.get(key);
-      if (campaign) {
-        campaigns.push(JSON.parse(campaign));
+      // Only get the main campaign hash, not sub-keys
+      if (key.split(':').length !== 3) continue;
+      
+      const campaign = await redis.hgetall(key);
+      if (campaign && campaign.id) {
+        campaigns.push(campaign);
       }
     }
 
@@ -18,21 +21,23 @@ export async function GET(request) {
     const submissions = [];
     
     for (const campaign of campaigns) {
-      const submissionKeys = await redis.keys(`submission:${campaign.id}:*`);
+      const submissionKeys = await redis.keys(`trenchshare:submission:${campaign.id}:*`);
       
       for (const subKey of submissionKeys) {
-        const submission = await redis.get(subKey);
-        if (submission) {
-          const parsed = JSON.parse(submission);
+        const submission = await redis.hgetall(subKey);
+        if (submission && submission.posts) {
+          const posts = JSON.parse(submission.posts);
           
           // Filter only pending posts
-          const pendingPosts = parsed.posts.filter(p => p.status === 'pending');
+          const pendingPosts = posts.filter(p => p.status === 'pending');
           
           if (pendingPosts.length > 0) {
             submissions.push({
-              ...parsed,
+              campaignId: campaign.id,
               campaignName: campaign.name,
-              posts: parsed.posts, // Keep all posts but mark which are pending
+              wallet: submission.wallet,
+              submittedAt: submission.submittedAt,
+              posts: posts, // Keep all posts but mark which are pending
             });
           }
         }
@@ -40,7 +45,7 @@ export async function GET(request) {
     }
 
     // Sort by submission date (newest first)
-    submissions.sort((a, b) => b.submittedAt - a.submittedAt);
+    submissions.sort((a, b) => new Date(b.submittedAt) - new Date(a.submittedAt));
 
     return NextResponse.json({ submissions });
   } catch (error) {

@@ -13,7 +13,7 @@ export async function GET(request) {
       );
     }
 
-    const leaderboardKey = `leaderboard:campaign:${campaignId}`;
+    const leaderboardKey = `trenchshare:leaderboard:${campaignId}`;
     
     // Get top 100 from sorted set (descending order)
     const entries = await redis.zrevrange(leaderboardKey, 0, 99, 'WITHSCORES');
@@ -29,8 +29,7 @@ export async function GET(request) {
     }
 
     // Get campaign info
-    const campaignData = await redis.get(`campaign:${campaignId}`);
-    const campaign = campaignData ? JSON.parse(campaignData) : null;
+    const campaign = await redis.hgetall(`trenchshare:campaign:${campaignId}`);
 
     return NextResponse.json({ 
       leaderboard,

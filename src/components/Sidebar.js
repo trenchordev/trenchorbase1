@@ -1,14 +1,31 @@
 'use client';
 
-import { useState } from 'react';
+import { useState, useEffect } from 'react';
 import Link from 'next/link';
 import { usePathname } from 'next/navigation';
 import { ConnectButton } from '@rainbow-me/rainbowkit';
 import { useTokenGate } from '@/hooks/useTokenGate';
+import { useAccount } from 'wagmi';
 
 export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
   const pathname = usePathname();
+  const { address, isConnected: isWalletConnected } = useAccount();
   const { isConnected, formattedBalance, requiredFormatted } = useTokenGate();
+  const [userPoints, setUserPoints] = useState(0);
+
+  // Fetch user points
+  useEffect(() => {
+    if (address) {
+      fetch(`/api/trenchshare/user-points?wallet=${address}`)
+        .then(res => res.json())
+        .then(data => {
+          if (data.success) setUserPoints(data.totalPoints);
+        })
+        .catch(err => console.error('Error fetching points:', err));
+    } else {
+      setUserPoints(0);
+    }
+  }, [address, pathname]); // Refresh on page change or wallet change
 
   // SVG Icons
   const icons = {
@@ -111,6 +128,23 @@ export default function Sidebar({ sidebarOpen, setSidebarOpen }) {
       <div className="p-4 border-t border-[#00ff41]/15 bg-[#0a0f1a]">
         {sidebarOpen ? (
           <div className="space-y-3">
+            {/* Trenchor Points Display */}
+            {isWalletConnected && (
+              <div className="flex items-center justify-between gap-2 rounded-lg bg-[#00ff41]/5 border border-[#00ff41]/20 px-3 py-2 mb-2">
+                <div className="text-left">
+                  <div className="text-[10px] text-[#00ff41]/70 font-bold tracking-wider">TRENCHOR POINTS</div>
+                  <div className="text-lg text-[#00ff41] font-mono font-bold drop-shadow-[0_0_8px_rgba(0,255,65,0.4)]">
+                    {userPoints.toLocaleString()}
+                  </div>
+                </div>
+                <div className="w-8 h-8 rounded-full bg-[#00ff41]/10 flex items-center justify-center border border-[#00ff41]/20">
+                  <svg className="w-4 h-4 text-[#00ff41]" fill="currentColor" viewBox="0 0 24 24">
+                    <path d="M12 2L15.09 8.26L22 9.27L17 14.14L18.18 21.02L12 17.77L5.82 21.02L7 14.14L2 9.27L8.91 8.26L12 2Z" />
+                  </svg>
+                </div>
+              </div>
+            )}
+
             <div className="flex items-center justify-between text-[10px] font-mono">
               <span className="text-white/50">WALLET</span>
               <span className={`flex items-center gap-1 ${isConnected ? 'text-[#00ff41]' : 'text-red-500'}`}>

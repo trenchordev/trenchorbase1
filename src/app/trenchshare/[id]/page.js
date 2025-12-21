@@ -31,6 +31,7 @@ export default function CampaignDetailPage() {
   const [submitting, setSubmitting] = useState(false);
   const [submitted, setSubmitted] = useState(false);
   const [existingSubmission, setExistingSubmission] = useState(null);
+  const [dailyCount, setDailyCount] = useState(0);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
 
@@ -58,7 +59,7 @@ export default function CampaignDetailPage() {
         setLeaderboard(leaderboardData.leaderboard);
       }
 
-      // Check existing submission
+      // Check existing submission and daily count
       if (address) {
         const subRes = await fetch(`/api/trenchshare/submission?campaignId=${params.id}&wallet=${address}`, { cache: 'no-store' });
         const subData = await subRes.json();
@@ -66,6 +67,14 @@ export default function CampaignDetailPage() {
         if (subData.submission) {
           setExistingSubmission(subData.submission);
           setSubmitted(true);
+        }
+
+        // Fetch daily count from submit API (we'll add a GET method or separate endpoint)
+        // For now, let's assume the submission API returns it or we fetch it
+        const dailyRes = await fetch(`/api/trenchshare/daily-status?campaignId=${params.id}&wallet=${address}`, { cache: 'no-store' });
+        const dailyData = await dailyRes.json();
+        if (dailyData.success) {
+          setDailyCount(dailyData.count);
         }
       }
     } catch (err) {
@@ -77,7 +86,8 @@ export default function CampaignDetailPage() {
   };
 
   const addPostField = () => {
-    if (posts.length < (campaign?.maxPosts || 10)) {
+    const remainingDaily = 10 - dailyCount;
+    if (posts.length < remainingDaily) {
       setPosts([...posts, '']);
     }
   };
@@ -154,6 +164,7 @@ export default function CampaignDetailPage() {
       setSuccess('Your posts have been submitted successfully! Points will be calculated after review.');
       setSubmitted(true);
       setExistingSubmission(data.submission);
+      setPosts(['']); // Reset form for next daily submission
       
       // Refresh leaderboard
       setTimeout(() => {
@@ -267,163 +278,164 @@ export default function CampaignDetailPage() {
         {/* Two Column Layout */}
         <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
           {/* Left Column - Submit Form */}
-          <div>
-            {submitted && existingSubmission ? (
-              <div className="bg-[#0d1520] border border-[#00ff41]/20 rounded-xl p-6">
-                <div className="flex items-start gap-4 mb-6">
-                  <div className="w-12 h-12 bg-[#00ff41]/20 rounded-full flex items-center justify-center flex-shrink-0">
+          <div className="space-y-6">
+            {/* Submission Form */}
+            <div className="bg-[#0d1520] border border-[#00ff41]/20 rounded-xl p-6">
+              <div className="flex justify-between items-center mb-4">
+                <h3 className="text-xl font-bold text-white">Submit Your Posts</h3>
+                <div className="px-3 py-1 rounded-full bg-[#00ff41]/10 border border-[#00ff41]/30 text-[10px] font-mono text-[#00ff41]">
+                  DAILY LIMIT: {dailyCount}/10
+                </div>
+              </div>
+              
+              <p className="text-white/60 text-sm mb-6">
+                Share X posts about $TRB or Trenchor. You can submit up to <span className="text-[#00ff41] font-bold">10 posts every day</span>.
+              </p>
+
+              {dailyCount >= 10 ? (
+                <div className="bg-[#00ff41]/5 border border-[#00ff41]/20 rounded-lg p-6 text-center mb-6">
+                  <div className="w-12 h-12 bg-[#00ff41]/20 rounded-full flex items-center justify-center mx-auto mb-3">
                     <svg className="w-6 h-6 text-[#00ff41]" fill="none" stroke="currentColor" viewBox="0 0 24 24">
                       <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
                     </svg>
                   </div>
-                  <div>
-                    <h3 className="text-xl font-bold text-white mb-1">Submission Complete!</h3>
-                    <p className="text-white/60">
-                      You submitted {existingSubmission.posts?.length || 0} posts for review.
-                    </p>
+                  <h4 className="text-[#00ff41] font-bold mb-1">Daily Limit Reached</h4>
+                  <p className="text-white/50 text-xs">You've submitted 10 posts today. Your limit will reset at 00:00 UTC.</p>
+                </div>
+              ) : (
+                <>
+                  {!isCampaignActive() && (
+                    <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 mb-4">
+                      <p className="text-yellow-400 text-sm">
+                        {new Date() < new Date(campaign.startDate) ? 'Campaign has not started yet' : 'Campaign has ended'}
+                      </p>
+                    </div>
+                  )}
+
+                  {error && (
+                    <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 mb-4">
+                      <p className="text-red-400 text-sm">{error}</p>
+                    </div>
+                  )}
+
+                  {success && (
+                    <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4 mb-4">
+                      <p className="text-green-400 text-sm">{success}</p>
+                    </div>
+                  )}
+
+                  <div className="space-y-3 mb-6">
+                    {posts.map((post, index) => (
+                      <div key={index} className="flex gap-2">
+                        <div className="flex-1 relative">
+                          <input
+                            type="url"
+                            value={post}
+                            onChange={(e) => updatePost(index, e.target.value)}
+                            placeholder="https://x.com/username/status/123456789"
+                            className="w-full bg-black/50 border border-white/20 rounded-lg px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-[#00ff41]/50 transition-colors"
+                            disabled={!isCampaignActive()}
+                          />
+                          {post && validateTwitterUrl(post) && (
+                            <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[#00ff41]">
+                              <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
+                              </svg>
+                            </span>
+                          )}
+                        </div>
+                        {posts.length > 1 && (
+                          <button
+                            onClick={() => removePostField(index)}
+                            className="px-3 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition-colors"
+                            disabled={!isCampaignActive()}
+                          >
+                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                            </svg>
+                          </button>
+                        )}
+                      </div>
+                    ))}
+                  </div>
+
+                  <div className="flex items-center justify-between">
+                    <button
+                      onClick={addPostField}
+                      disabled={posts.length >= (10 - dailyCount) || !isCampaignActive()}
+                      className="flex items-center gap-2 text-[#00ff41] hover:text-[#00cc33] disabled:text-white/30 disabled:cursor-not-allowed transition-colors"
+                    >
+                      <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                        <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
+                      </svg>
+                      Add Post ({posts.length}/{10 - dailyCount})
+                    </button>
+
+                    <button
+                      onClick={handleSubmit}
+                      disabled={submitting || !isCampaignActive()}
+                      className="flex items-center gap-2 bg-[#00ff41] hover:bg-[#00cc33] text-black font-bold px-6 py-3 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
+                    >
+                      {submitting ? (
+                        <>
+                          <div className="w-5 h-5 border-2 border-black/30 border-t-black rounded-full animate-spin"></div>
+                          Signing...
+                        </>
+                      ) : (
+                        <>
+                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
+                          </svg>
+                          Submit
+                        </>
+                      )}
+                    </button>
+                  </div>
+                </>
+              )}
+
+              <p className="text-xs text-white/30 mt-4">
+                💡 Signature required for verification. No gas fees. You can submit 10 posts every 24 hours.
+              </p>
+            </div>
+
+            {/* Existing Submissions */}
+            {submitted && existingSubmission && (
+              <div className="bg-[#0d1520] border border-[#00ff41]/20 rounded-xl p-6">
+                <div className="flex items-center justify-between mb-6">
+                  <h3 className="text-xl font-bold text-white">Your Submissions</h3>
+                  <div className="flex gap-4">
+                    <div className="text-center">
+                      <div className="text-xs text-white/40">Total Points</div>
+                      <div className="text-lg font-bold text-[#00ff41]">{existingSubmission.points || 0}</div>
+                    </div>
+                    <div className="text-center">
+                      <div className="text-xs text-white/40">Total Posts</div>
+                      <div className="text-lg font-bold text-cyan-400">{existingSubmission.posts?.length || 0}</div>
+                    </div>
                   </div>
                 </div>
 
-                <div className="grid grid-cols-2 gap-4 mb-6">
-                  <div className="p-4 rounded-lg bg-[#111827] border border-white/10">
-                    <div className="text-sm text-white/40 mb-1">Total Points</div>
-                    <div className="text-2xl font-bold text-[#00ff41]">{existingSubmission.totalPoints || 0}</div>
-                  </div>
-                  <div className="p-4 rounded-lg bg-[#111827] border border-white/10">
-                    <div className="text-sm text-white/40 mb-1">Posts</div>
-                    <div className="text-2xl font-bold text-cyan-400">{existingSubmission.posts?.length || 0}</div>
-                  </div>
-                </div>
-
-                <div className="space-y-2">
-                  <div className="text-sm text-white/60 font-medium mb-3">Your Submissions:</div>
-                  {existingSubmission.posts?.map((post, idx) => (
+                <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 custom-scrollbar">
+                  {existingSubmission.posts?.map((postUrl, idx) => (
                     <div key={idx} className="p-3 rounded-lg bg-black/30 border border-white/10">
                       <div className="flex items-center justify-between mb-2">
                         <span className="text-xs text-white/40">Post #{idx + 1}</span>
-                        <span className={`text-xs px-2 py-1 rounded ${
-                          post.status === 'approved' ? 'bg-green-500/20 text-green-400' :
-                          post.status === 'rejected' ? 'bg-red-500/20 text-red-400' :
-                          'bg-yellow-500/20 text-yellow-400'
-                        }`}>
-                          {post.status === 'approved' ? 'Approved' : 
-                           post.status === 'rejected' ? 'Rejected' : 
-                           'Pending'}
+                        <span className="text-xs px-2 py-1 rounded bg-yellow-500/20 text-yellow-400">
+                          Pending
                         </span>
                       </div>
-                      {post.finalScore > 0 && (
-                        <div className="text-sm font-bold text-[#00ff41] mb-2">+{post.finalScore} points</div>
-                      )}
                       <a
-                        href={post.url}
+                        href={typeof postUrl === 'string' ? postUrl : postUrl.url}
                         target="_blank"
                         rel="noopener noreferrer"
                         className="text-xs text-cyan-400 hover:underline break-all"
                       >
-                        {post.url}
+                        {typeof postUrl === 'string' ? postUrl : postUrl.url}
                       </a>
                     </div>
                   ))}
                 </div>
-              </div>
-            ) : (
-              <div className="bg-[#0d1520] border border-[#00ff41]/20 rounded-xl p-6">
-                <h3 className="text-xl font-bold text-white mb-4">Submit Your Posts</h3>
-                <p className="text-white/60 text-sm mb-6">
-                  Share X posts about $TRB or Trenchor. Add up to {campaign.maxPosts || 10} post links.
-                </p>
-
-                {!isCampaignActive() && (
-                  <div className="bg-yellow-500/10 border border-yellow-500/30 rounded-lg p-4 mb-4">
-                    <p className="text-yellow-400 text-sm">
-                      {new Date() < new Date(campaign.startDate) ? 'Campaign has not started yet' : 'Campaign has ended'}
-                    </p>
-                  </div>
-                )}
-
-                {error && (
-                  <div className="bg-red-500/10 border border-red-500/30 rounded-lg p-4 mb-4">
-                    <p className="text-red-400 text-sm">{error}</p>
-                  </div>
-                )}
-
-                {success && (
-                  <div className="bg-green-500/10 border border-green-500/30 rounded-lg p-4 mb-4">
-                    <p className="text-green-400 text-sm">{success}</p>
-                  </div>
-                )}
-
-                <div className="space-y-3 mb-6">
-                  {posts.map((post, index) => (
-                    <div key={index} className="flex gap-2">
-                      <div className="flex-1 relative">
-                        <input
-                          type="url"
-                          value={post}
-                          onChange={(e) => updatePost(index, e.target.value)}
-                          placeholder="https://x.com/username/status/123456789"
-                          className="w-full bg-black/50 border border-white/20 rounded-lg px-4 py-3 text-white placeholder-white/30 focus:outline-none focus:border-[#00ff41]/50 transition-colors"
-                          disabled={!isCampaignActive()}
-                        />
-                        {post && validateTwitterUrl(post) && (
-                          <span className="absolute right-3 top-1/2 -translate-y-1/2 text-[#00ff41]">
-                            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M5 13l4 4L19 7" />
-                            </svg>
-                          </span>
-                        )}
-                      </div>
-                      {posts.length > 1 && (
-                        <button
-                          onClick={() => removePostField(index)}
-                          className="px-3 py-2 bg-red-500/20 hover:bg-red-500/30 text-red-400 rounded-lg transition-colors"
-                          disabled={!isCampaignActive()}
-                        >
-                          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                          </svg>
-                        </button>
-                      )}
-                    </div>
-                  ))}
-                </div>
-
-                <div className="flex items-center justify-between">
-                  <button
-                    onClick={addPostField}
-                    disabled={posts.length >= (campaign.maxPosts || 10) || !isCampaignActive()}
-                    className="flex items-center gap-2 text-[#00ff41] hover:text-[#00cc33] disabled:text-white/30 disabled:cursor-not-allowed transition-colors"
-                  >
-                    <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                      <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M12 6v6m0 0v6m0-6h6m-6 0H6" />
-                    </svg>
-                    Add Post ({posts.length}/{campaign.maxPosts || 10})
-                  </button>
-
-                  <button
-                    onClick={handleSubmit}
-                    disabled={submitting || !isCampaignActive()}
-                    className="flex items-center gap-2 bg-[#00ff41] hover:bg-[#00cc33] text-black font-bold px-6 py-3 rounded-lg transition-all disabled:opacity-50 disabled:cursor-not-allowed"
-                  >
-                    {submitting ? (
-                      <>
-                        <div className="w-5 h-5 border-2 border-black/30 border-t-black rounded-full animate-spin"></div>
-                        Signing...
-                      </>
-                    ) : (
-                      <>
-                        <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                          <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z" />
-                        </svg>
-                        Submit
-                      </>
-                    )}
-                  </button>
-                </div>
-
-                <p className="text-xs text-white/30 mt-4">
-                  💡 Signature required for verification. No gas fees.
-                </p>
               </div>
             )}
           </div>

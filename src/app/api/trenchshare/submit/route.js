@@ -45,6 +45,16 @@ export async function POST(request) {
     }
 
     const walletLower = wallet.toLowerCase();
+    const today = new Date().toISOString().split('T')[0];
+    const dailyLimitKey = `trenchshare:daily-limit:${campaignId}:${walletLower}:${today}`;
+
+    // Check daily limit (10 posts per day)
+    const currentDailyCount = await redis.get(dailyLimitKey) || 0;
+    if (parseInt(currentDailyCount) + posts.length > 10) {
+      return NextResponse.json({ 
+        error: `Daily limit reached. You can submit ${10 - parseInt(currentDailyCount)} more posts today.` 
+      }, { status: 400 });
+    }
 
     // Check if campaign exists and is active
     const campaignKey = `trenchshare:campaign:${campaignId}`;
@@ -66,12 +76,26 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Campaign is not currently running' }, { status: 400 });
     }
 
-    // Check if already submitted
+    // Fetch existing submission to append posts
     const submissionKey = `trenchshare:submission:${campaignId}:${walletLower}`;
     const existingSubmission = await redis.hgetall(submissionKey);
-
+    
+    let allPosts = [];
     if (existingSubmission && existingSubmission.posts) {
-      return NextResponse.json({ error: 'You have already submitted to this campaign' }, { status: 400 });
+      try {
+        allPosts = JSON.parse(existingSubmission.posts);
+      } catch (e) {
+        console.error('Error parsing existing posts:', e);
+        allPosts = [];
+      }
+    }
+
+    // Check for duplicate URLs
+    const existingUrls = allPosts.map(p => typeof p === 'string' ? p : p.url);
+    for (const newPostUrl of posts) {
+      if (existingUrls.includes(newPostUrl)) {
+        return NextResponse.json({ error: `Post already submitted: ${newPostUrl}` }, { status: 400 });
+      }
     }
 
     // Verify signature
@@ -103,19 +127,35 @@ export async function POST(request) {
       return NextResponse.json({ error: 'Signature expired' }, { status: 400 });
     }
 
+    // Create new post objects
+    const newPostObjects = posts.map(url => ({
+      url,
+      status: 'pending',
+      submittedAt: new Date().toISOString(),
+      finalScore: 0
+    }));
+
+    // Update posts array
+    const updatedPosts = [...allPosts, ...newPostObjects];
+
     // Save submission
     const submission = {
       campaignId,
       wallet: walletLower,
-      posts: JSON.stringify(posts),
-      signature,
+      posts: JSON.stringify(updatedPosts),
+      signature, // Store latest signature
       timestamp: timestamp.toString(),
-      status: 'pending',
-      points: '0',
-      submittedAt: new Date().toISOString(),
+      status: existingSubmission?.status || 'pending',
+      points: existingSubmission?.points || '0',
+      submittedAt: existingSubmission?.submittedAt || new Date().toISOString(),
+      updatedAt: new Date().toISOString(),
     };
 
     await redis.hset(submissionKey, submission);
+
+    // Increment daily limit and set expiry (48h to be safe)
+    await redis.incrby(dailyLimitKey, posts.length);
+    await redis.expire(dailyLimitKey, 172800);
 
     // Add to submissions list for this campaign
     await redis.sadd(`trenchshare:campaign:${campaignId}:submissions`, walletLower);
@@ -125,9 +165,9 @@ export async function POST(request) {
       submission: {
         campaignId,
         wallet: walletLower,
-        posts,
-        status: 'pending',
-        points: 0,
+        posts: updatedPosts,
+        status: submission.status,
+        points: parseInt(submission.points),
       }
     });
   } catch (error) {

@@ -23,7 +23,7 @@ export async function GET(request) {
     }
 
     // Get participant count
-    const leaderboardKey = `leaderboard:campaign:${id}`;
+    const leaderboardKey = `trenchshare:leaderboard:${id}`;
     const participantCount = await redis.zcard(leaderboardKey);
 
     return NextResponse.json({ 

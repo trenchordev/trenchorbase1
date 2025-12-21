@@ -20,11 +20,11 @@ export async function GET() {
       const campaign = await redis.hgetall(key);
       if (campaign && campaign.id) {
         // Get participant count for this campaign
-        const leaderboardKey = `leaderboard:campaign:${campaign.id}`;
+        const leaderboardKey = `trenchshare:leaderboard:${campaign.id}`;
         const participantCount = await redis.zcard(leaderboardKey);
         
         // Get submission count
-        const submissionKeys = await redis.keys(`submission:${campaign.id}:*`);
+        const submissionKeys = await redis.keys(`trenchshare:submission:${campaign.id}:*`);
         
         campaigns.push({
           id: campaign.id,
