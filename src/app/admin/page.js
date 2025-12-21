@@ -15,6 +15,7 @@ export default function AdminPage() {
   const [scanProgress, setScanProgress] = useState('');
   const [currentBlock, setCurrentBlock] = useState(null);
   const [editingToken, setEditingToken] = useState(null);
+  const [editingFeature, setEditingFeature] = useState(null);
   const [adminView, setAdminView] = useState('tokens');
   const emptyForm = {
     tokenId: '',
@@ -262,6 +263,7 @@ export default function AdminPage() {
       const result = await safeJson(response);
       if (result.success) {
         setFeatureForm({ id: '', name: '', ticker: '', imageUrl: '', timeline: '', distributionPeriod: '', details: '', totalReward: '', campaignLinks: '', uniqueTraders: '', totalSwaps: '', ctaUrl: '' });
+        setEditingFeature(null);
         fetchFeatureCampaigns();
       } else {
         alert(result.error || 'Failed to save feature campaign');
@@ -270,6 +272,36 @@ export default function AdminPage() {
       console.error('Error saving feature campaign:', err);
       alert('Error: ' + err.message);
     }
+  };
+
+  const handleEditFeature = (item) => {
+    setEditingFeature(item.id);
+    let links = '';
+    if (item.campaignLinks) {
+      try {
+        const parsed = typeof item.campaignLinks === 'string' ? JSON.parse(item.campaignLinks) : item.campaignLinks;
+        links = Array.isArray(parsed) ? parsed.join(', ') : parsed;
+      } catch (e) {
+        links = item.campaignLinks;
+      }
+    }
+    
+    setFeatureForm({
+      id: item.id,
+      name: item.name || '',
+      ticker: item.ticker || '',
+      imageUrl: item.imageUrl || '',
+      timeline: item.timeline || '',
+      distributionPeriod: item.distributionPeriod || '',
+      details: item.details || '',
+      totalReward: item.totalReward || '',
+      campaignLinks: links,
+      uniqueTraders: item.uniqueTraders || '',
+      totalSwaps: item.totalSwaps || '',
+      ctaUrl: item.ctaUrl || '',
+    });
+    // Scroll to form
+    window.scrollTo({ top: 0, behavior: 'smooth' });
   };
 
   const handleFeatureImageUpload = (e) => {
@@ -1072,6 +1104,10 @@ export default function AdminPage() {
       }
       const result = await response.json();
       if (result.success) {
+        if (editingFeature === id) {
+          setEditingFeature(null);
+          setFeatureForm({ id: '', name: '', ticker: '', imageUrl: '', timeline: '', distributionPeriod: '', details: '', totalReward: '', campaignLinks: '', uniqueTraders: '', totalSwaps: '', ctaUrl: '' });
+        }
         fetchFeatureCampaigns();
       }
     } catch (err) {
@@ -1570,7 +1606,20 @@ export default function AdminPage() {
 
         {adminView === 'features' && (
           <div className="border border-cyan-400/30 bg-black/50 rounded-lg p-6">
-            <h2 className="text-lg font-bold text-cyan-300 mb-4">{'>'} FEATURE CAMPAIGNS</h2>
+            <div className="flex justify-between items-center mb-4">
+              <h2 className="text-lg font-bold text-cyan-300">{'>'} {editingFeature ? 'EDIT' : 'ADD'} FEATURE CAMPAIGN</h2>
+              {editingFeature && (
+                <button
+                  onClick={() => {
+                    setEditingFeature(null);
+                    setFeatureForm({ id: '', name: '', ticker: '', imageUrl: '', timeline: '', distributionPeriod: '', details: '', totalReward: '', campaignLinks: '', uniqueTraders: '', totalSwaps: '', ctaUrl: '' });
+                  }}
+                  className="px-3 py-1 text-xs border border-white/30 text-white/70 hover:bg-white/10 font-mono rounded"
+                >
+                  CANCEL EDIT
+                </button>
+              )}
+            </div>
 
             <form onSubmit={handleAddFeatureCampaign} className="grid md:grid-cols-2 gap-4 mb-6">
               <div>
@@ -1581,7 +1630,8 @@ export default function AdminPage() {
                   onChange={(e) => setFeatureForm({ ...featureForm, id: e.target.value })}
                   placeholder="ai-chars"
                   required
-                  className="w-full bg-black border border-cyan-400/50 px-3 py-2 font-mono text-sm focus:border-cyan-300 outline-none rounded"
+                  disabled={!!editingFeature}
+                  className={`w-full bg-black border border-cyan-400/50 px-3 py-2 font-mono text-sm focus:border-cyan-300 outline-none rounded ${editingFeature ? 'opacity-50 cursor-not-allowed' : ''}`}
                 />
               </div>
 
@@ -1725,7 +1775,7 @@ export default function AdminPage() {
                   type="submit"
                   className="w-full py-3 border-2 border-cyan-400 bg-cyan-300 text-black font-bold hover:bg-transparent hover:text-cyan-300 transition-all font-mono rounded"
                 >
-                  [ SAVE FEATURE CAMPAIGN ]
+                  [ {editingFeature ? 'UPDATE' : 'SAVE'} FEATURE CAMPAIGN ]
                 </button>
               </div>
             </form>
@@ -1752,6 +1802,12 @@ export default function AdminPage() {
                     </div>
 
                     <div className="flex gap-2">
+                      <button
+                        onClick={() => handleEditFeature(item)}
+                        className="px-3 py-1 text-xs border border-yellow-400/60 text-yellow-300 hover:bg-yellow-500 hover:text-black font-mono rounded transition-colors"
+                      >
+                        EDIT
+                      </button>
                       <button
                         onClick={() => handleDeleteFeatureCampaign(item.id)}
                         className="px-3 py-1 text-xs border border-red-400/60 text-red-300 hover:bg-red-500 hover:text-black font-mono rounded transition-colors"
