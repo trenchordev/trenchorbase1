@@ -117,13 +117,13 @@ export default function AdminPage() {
     fetchJobStatuses();
     fetchTrbStatus();
     fetchTrenchshareCampaigns();
-    
+
     // Poll job statuses every 10 seconds
     const interval = setInterval(() => {
       fetchJobStatuses();
       fetchTrbStatus();
     }, 4000);
-    
+
     return () => clearInterval(interval);
   }, [isAuthenticated]);
 
@@ -285,7 +285,7 @@ export default function AdminPage() {
         links = item.campaignLinks;
       }
     }
-    
+
     setFeatureForm({
       id: item.id,
       name: item.name || '',
@@ -395,7 +395,7 @@ export default function AdminPage() {
 
   const handleResetTaxCampaign = async (id) => {
     if (!confirm(`⚠️ RESET tax campaign "${id}"?\n\nThis will clear:\n- Leaderboard data\n- Processed transactions (duplicates)\n- Job status\n\nCampaign config will remain.`)) return;
-    
+
     try {
       const response = await fetch('/api/admin/reset-tax-campaign', {
         method: 'POST',
@@ -430,7 +430,7 @@ export default function AdminPage() {
     } else {
       blockInfo = `⏰ Last ${campaign.timeWindowMinutes || 99} minutes\n⚠️ Results will vary each time!`;
     }
-    
+
     if (!confirm(`🔍 MANUEL SCAN\n\n${blockInfo}\n\nThis will scan ALL transactions in this range.\n\nContinue?`)) return;
 
     setScanning(true);
@@ -455,11 +455,11 @@ export default function AdminPage() {
 
       const partialWarning = data.partial ? `\n\n⚠️ PARTIAL SCAN: ${data.warning}` : '';
       const executionInfo = data.stats.executionTime ? `\n⏱️ Execution: ${data.stats.executionTime}` : '';
-      const processedInfo = data.stats.processedTxCount && data.stats.totalTxFound 
-        ? `\n📊 Processed: ${data.stats.processedTxCount}/${data.stats.totalTxFound} transactions` 
+      const processedInfo = data.stats.processedTxCount && data.stats.totalTxFound
+        ? `\n📊 Processed: ${data.stats.processedTxCount}/${data.stats.totalTxFound} transactions`
         : '';
-      const incrementalInfo = data.stats.isIncremental && data.stats.newUsersThisScan 
-        ? `\n➕ New users this scan: ${data.stats.newUsersThisScan}` 
+      const incrementalInfo = data.stats.isIncremental && data.stats.newUsersThisScan
+        ? `\n➕ New users this scan: ${data.stats.newUsersThisScan}`
         : '';
 
       const blockScanInfo = data.stats.scannedBlocks !== data.stats.requestedBlocks
@@ -493,10 +493,10 @@ export default function AdminPage() {
       alert('⚠️ Please configure START and END blocks first!');
       return;
     }
-    
+
     const totalBlocks = parseInt(campaign.endBlock) - parseInt(campaign.startBlock);
     const estimatedMinutes = Math.ceil(totalBlocks / 500); // ~500 blocks per 55 seconds
-    
+
     if (!confirm(`🚀 FAST SCAN\n\n🎯 START: ${campaign.startBlock}\n🏁 END: ${campaign.endBlock}\n📊 TOTAL: ${totalBlocks} blocks\n\n⏱️ Estimated: ~${estimatedMinutes} minutes\n⚡ Scans ~500-1000 blocks per iteration\n\n✨ Best for historical data backfill.\n\nContinue?`)) return;
 
     setScanning(true);
@@ -521,12 +521,12 @@ export default function AdminPage() {
 
       const partialWarning = data.partial ? `\n\n⚠️ PARTIAL SCAN: ${data.warning}` : '';
       const speedInfo = data.stats.blocksPerSecond ? `\n⚡ Speed: ${data.stats.blocksPerSecond} blocks/sec` : '';
-      const incrementalInfo = data.stats.isIncremental && data.stats.newUsersThisScan 
-        ? `\n➕ New users this scan: ${data.stats.newUsersThisScan}` 
+      const incrementalInfo = data.stats.isIncremental && data.stats.newUsersThisScan
+        ? `\n➕ New users this scan: ${data.stats.newUsersThisScan}`
         : '';
 
-      const scannedInfo = data.stats.scannedBlocks !== data.stats.requestedBlocks 
-        ? `📦 ACTUALLY SCANNED: ${data.stats.scannedBlocks} (${data.stats.coveragePercentage}%)\n🎯 REQUESTED: ${data.stats.requestedBlocks}\n${data.partial ? '⚠️ PARTIAL SCAN' : ''}\n` 
+      const scannedInfo = data.stats.scannedBlocks !== data.stats.requestedBlocks
+        ? `📦 ACTUALLY SCANNED: ${data.stats.scannedBlocks} (${data.stats.coveragePercentage}%)\n🎯 REQUESTED: ${data.stats.requestedBlocks}\n${data.partial ? '⚠️ PARTIAL SCAN' : ''}\n`
         : `📦 Scanned Blocks: ${data.stats.scannedBlocks} (✅ 100%)\n`;
 
       alert(`🚀 Fast Scan ${data.partial ? 'Partially ' : ''}Completed!\n\n` +
@@ -609,10 +609,10 @@ export default function AdminPage() {
       alert('⚠️ Please configure START and END blocks first!');
       return;
     }
-    
+
     const totalBlocks = parseInt(campaign.endBlock) - parseInt(campaign.startBlock);
     const estimatedMinutes = Math.ceil(totalBlocks / 20); // 20 blocks per minute
-    
+
     if (!confirm(`⚡ AUTO-SCAN (Background)\n\n🎯 START: ${campaign.startBlock}\n🏁 END: ${campaign.endBlock}\n📊 TOTAL: ${totalBlocks} blocks\n\n⏱️ Estimated: ~${estimatedMinutes} minutes\n🔄 Scans 20 blocks per minute\n\n📌 Runs in background via cron job.\n⚠️ Can resume from partial scans.\n\nStart?`)) return;
 
     try {
@@ -631,7 +631,7 @@ export default function AdminPage() {
 
       const resumeEmoji = data.job.isResuming ? '🔄' : '✅';
       const resumeText = data.job.isResuming ? 'RESUMED' : 'STARTED';
-      
+
       alert(`${resumeEmoji} Auto-Scan ${resumeText}!\n\n` +
         `📦 Scanning: ${data.job.startBlock} → ${data.job.endBlock}\n` +
         `📊 Total Blocks: ${data.job.totalBlocks}\n` +
@@ -704,18 +704,18 @@ export default function AdminPage() {
 
   const fetchJobStatuses = async () => {
     try {
-      const res = await fetch('/api/admin/job-status', { 
-        cache: 'no-store', 
-        credentials: 'include' 
+      const res = await fetch('/api/admin/job-status', {
+        cache: 'no-store',
+        credentials: 'include'
       });
-      
+
       if (res.status === 401) {
         handleUnauthorized();
         return;
       }
-      
+
       const data = await safeJson(res);
-      
+
       if (data.jobs) {
         const statusMap = {};
         data.jobs.forEach(job => {
@@ -763,7 +763,7 @@ export default function AdminPage() {
       }
       const data = await safeJson(res);
       console.log('Fetched campaigns:', data.campaigns);
-      
+
       // Apply localStorage overrides
       const campaigns = (data.campaigns || []).map(campaign => {
         const override = localStorage.getItem(`campaign_${campaign.id}_active`);
@@ -772,7 +772,7 @@ export default function AdminPage() {
         }
         return campaign;
       });
-      
+
       setTrenchshareCampaigns(campaigns);
     } catch (err) {
       console.error('Error fetching TrenchShare campaigns:', err);
@@ -817,18 +817,18 @@ export default function AdminPage() {
 
   const handleToggleTrenchshareCampaign = async (campaign) => {
     const newActive = !campaign.active;
-    
+
     try {
       console.log('Toggling campaign:', campaign.id, 'from', campaign.active, 'to', newActive);
-      
+
       // Store in localStorage FIRST
       localStorage.setItem(`campaign_${campaign.id}_active`, newActive.toString());
-      
+
       // Update local state immediately
-      setTrenchshareCampaigns(prev => 
+      setTrenchshareCampaigns(prev =>
         prev.map(c => c.id === campaign.id ? { ...c, active: newActive } : c)
       );
-      
+
       // Try to update Redis in background (don't wait)
       fetch('/api/admin/trenchshare-campaigns', {
         method: 'PUT',
@@ -836,7 +836,7 @@ export default function AdminPage() {
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ id: campaign.id, active: newActive }),
       }).catch(err => console.error('Background update failed:', err));
-      
+
     } catch (err) {
       console.error('Toggle error:', err);
       alert(`❌ Error: ${err.message}`);
@@ -1976,145 +1976,145 @@ export default function AdminPage() {
                   const isScanning = jobStatus?.status === 'active';
                   const isStopped = jobStatus?.status === 'stopped';
                   const isCompleted = jobStatus?.status === 'completed';
-                  
+
                   return (
-                  <div key={campaign.id} className="p-4 border border-purple-400/30 rounded-lg">
-                    <div className="flex flex-col md:flex-row md:items-start justify-between gap-3 mb-3">
-                      <div className="flex items-start gap-3 flex-1">
-                        {campaign.logoUrl && (
-                          <div className="w-12 h-12 rounded bg-white/5 border border-purple-400/40 overflow-hidden flex items-center justify-center flex-shrink-0">
-                            <img 
-                              src={`/images/${campaign.logoUrl}`} 
-                              alt={campaign.name}
-                              className="w-full h-full object-cover"
-                              onError={(e) => {
-                                e.target.style.display = 'none';
-                                e.target.nextSibling.style.display = 'flex';
-                              }}
-                            />
-                            <span className="text-xs text-white/50 hidden">IMG</span>
-                          </div>
-                        )}
-                        <div className="flex-1">
-                          <div className="flex items-center gap-2">
-                            <div className="text-purple-300 font-bold text-lg">{campaign.name}</div>
-                            {isScanning && (
-                              <span className="px-2 py-0.5 text-xs bg-green-500/20 text-green-400 border border-green-400/50 rounded font-mono animate-pulse">
-                                🟢 SCANNING
-                              </span>
-                            )}
-                            {isCompleted && (
-                              <span className="px-2 py-0.5 text-xs bg-blue-500/20 text-blue-400 border border-blue-400/50 rounded font-mono">
-                                ✓ COMPLETED
-                              </span>
-                            )}
-                            {isStopped && (
-                              <span className="px-2 py-0.5 text-xs bg-yellow-500/20 text-yellow-400 border border-yellow-400/50 rounded font-mono">
-                                ⏸ PAUSED
-                              </span>
-                            )}
-                          </div>
-                          <div className="text-xs font-mono opacity-60 mb-2">/{campaign.id}</div>
-                          <div className="space-y-1 text-xs font-mono">
-                            <div className="text-cyan-400">Target: {campaign.targetToken?.slice(0, 10)}...{campaign.targetToken?.slice(-8)}</div>
-                            <div className="text-yellow-400">Tax Wallet: {campaign.taxWallet?.slice(0, 10)}...{campaign.taxWallet?.slice(-8)}</div>
-                            {campaign.logoUrl && (
-                              <div className="text-pink-400">Logo: /images/{campaign.logoUrl}</div>
-                            )}
-                            <div className="text-white/50">
-                              {campaign.startBlock && campaign.endBlock
-                                ? `Blocks: ${campaign.startBlock} → ${campaign.endBlock}`
-                                : `Time Window: ${campaign.timeWindowMinutes || 99} minutes`}
+                    <div key={campaign.id} className="p-4 border border-purple-400/30 rounded-lg">
+                      <div className="flex flex-col md:flex-row md:items-start justify-between gap-3 mb-3">
+                        <div className="flex items-start gap-3 flex-1">
+                          {campaign.logoUrl && (
+                            <div className="w-12 h-12 rounded bg-white/5 border border-purple-400/40 overflow-hidden flex items-center justify-center flex-shrink-0">
+                              <img
+                                src={`/images/${campaign.logoUrl}`}
+                                alt={campaign.name}
+                                className="w-full h-full object-cover"
+                                onError={(e) => {
+                                  e.target.style.display = 'none';
+                                  e.target.nextSibling.style.display = 'flex';
+                                }}
+                              />
+                              <span className="text-xs text-white/50 hidden">IMG</span>
                             </div>
-                            <div className="text-green-400">Users: {campaign.totalUsers || 0} | Total Tax: {campaign.totalTax || campaign.totalTaxPaid || '0.0000'} VIRTUAL</div>
-                            
-                            {jobStatus && jobStatus.stats && (
-                              <div className="mt-2 p-2 bg-black/30 rounded border border-cyan-400/30">
-                                <div className="text-cyan-300 font-bold mb-1">📊 Auto-Scan Progress</div>
-                                <div className="space-y-0.5 text-xs">
-                                  <div>Progress: {jobStatus.stats.progressPercent}% ({jobStatus.stats.scannedBlocks}/{jobStatus.stats.totalBlocks} blocks)</div>
-                                  <div>Remaining: ~{jobStatus.stats.estimatedRemainingMinutes} minutes</div>
-                                  <div className="w-full bg-gray-700 rounded-full h-2 mt-1">
-                                    <div 
-                                      className="bg-cyan-500 h-2 rounded-full transition-all duration-300"
-                                      style={{ width: `${jobStatus.stats.progressPercent}%` }}
-                                    />
+                          )}
+                          <div className="flex-1">
+                            <div className="flex items-center gap-2">
+                              <div className="text-purple-300 font-bold text-lg">{campaign.name}</div>
+                              {isScanning && (
+                                <span className="px-2 py-0.5 text-xs bg-green-500/20 text-green-400 border border-green-400/50 rounded font-mono animate-pulse">
+                                  🟢 SCANNING
+                                </span>
+                              )}
+                              {isCompleted && (
+                                <span className="px-2 py-0.5 text-xs bg-blue-500/20 text-blue-400 border border-blue-400/50 rounded font-mono">
+                                  ✓ COMPLETED
+                                </span>
+                              )}
+                              {isStopped && (
+                                <span className="px-2 py-0.5 text-xs bg-yellow-500/20 text-yellow-400 border border-yellow-400/50 rounded font-mono">
+                                  ⏸ PAUSED
+                                </span>
+                              )}
+                            </div>
+                            <div className="text-xs font-mono opacity-60 mb-2">/{campaign.id}</div>
+                            <div className="space-y-1 text-xs font-mono">
+                              <div className="text-cyan-400">Target: {campaign.targetToken?.slice(0, 10)}...{campaign.targetToken?.slice(-8)}</div>
+                              <div className="text-yellow-400">Tax Wallet: {campaign.taxWallet?.slice(0, 10)}...{campaign.taxWallet?.slice(-8)}</div>
+                              {campaign.logoUrl && (
+                                <div className="text-pink-400">Logo: /images/{campaign.logoUrl}</div>
+                              )}
+                              <div className="text-white/50">
+                                {campaign.startBlock && campaign.endBlock
+                                  ? `Blocks: ${campaign.startBlock} → ${campaign.endBlock}`
+                                  : `Time Window: ${campaign.timeWindowMinutes || 99} minutes`}
+                              </div>
+                              <div className="text-green-400">Users: {campaign.totalUsers || 0} | Total Tax: {campaign.totalTax || campaign.totalTaxPaid || '0.0000'} VIRTUAL</div>
+
+                              {jobStatus && jobStatus.stats && (
+                                <div className="mt-2 p-2 bg-black/30 rounded border border-cyan-400/30">
+                                  <div className="text-cyan-300 font-bold mb-1">📊 Auto-Scan Progress</div>
+                                  <div className="space-y-0.5 text-xs">
+                                    <div>Progress: {jobStatus.stats.progressPercent}% ({jobStatus.stats.scannedBlocks}/{jobStatus.stats.totalBlocks} blocks)</div>
+                                    <div>Remaining: ~{jobStatus.stats.estimatedRemainingMinutes} minutes</div>
+                                    <div className="w-full bg-gray-700 rounded-full h-2 mt-1">
+                                      <div
+                                        className="bg-cyan-500 h-2 rounded-full transition-all duration-300"
+                                        style={{ width: `${jobStatus.stats.progressPercent}%` }}
+                                      />
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                            )}
+                              )}
+                            </div>
                           </div>
                         </div>
-                      </div>
 
-                      <div className="flex gap-2 flex-wrap">
-                        {!isScanning && !isCompleted && (
-                          <>
+                        <div className="flex gap-2 flex-wrap">
+                          {!isScanning && !isCompleted && (
+                            <>
+                              <button
+                                onClick={() => handleFastTaxScan(campaign)}
+                                className="px-3 py-1 text-xs border border-orange-400/60 text-orange-300 hover:bg-orange-500 hover:text-black font-mono rounded transition-colors font-bold"
+                              >
+                                🚀 FAST SCAN
+                              </button>
+                              <button
+                                onClick={() => handleStartAutoScan(campaign)}
+                                className="px-3 py-1 text-xs border border-green-400/60 text-green-300 hover:bg-green-500 hover:text-black font-mono rounded transition-colors"
+                              >
+                                ▶ AUTO-SCAN
+                              </button>
+                            </>
+                          )}
+                          {isScanning && (
                             <button
-                              onClick={() => handleFastTaxScan(campaign)}
-                              className="px-3 py-1 text-xs border border-orange-400/60 text-orange-300 hover:bg-orange-500 hover:text-black font-mono rounded transition-colors font-bold"
+                              onClick={() => handleStopAutoScan(campaign)}
+                              className="px-3 py-1 text-xs border border-yellow-400/60 text-yellow-300 hover:bg-yellow-500 hover:text-black font-mono rounded transition-colors"
                             >
-                              🚀 FAST SCAN
+                              ⏸ STOP
                             </button>
+                          )}
+                          {isStopped && (
                             <button
-                              onClick={() => handleStartAutoScan(campaign)}
+                              onClick={() => handleResumeAutoScan(campaign)}
                               className="px-3 py-1 text-xs border border-green-400/60 text-green-300 hover:bg-green-500 hover:text-black font-mono rounded transition-colors"
                             >
-                              ▶ AUTO-SCAN
+                              ▶ RESUME
                             </button>
-                          </>
-                        )}
-                        {isScanning && (
+                          )}
                           <button
-                            onClick={() => handleStopAutoScan(campaign)}
+                            onClick={() => handleRunTaxScript(campaign)}
+                            className="px-3 py-1 text-xs border border-purple-400/60 text-purple-300 hover:bg-purple-500 hover:text-black font-mono rounded transition-colors"
+                          >
+                            MANUAL SCAN
+                          </button>
+                          <button
+                            onClick={() => handleDebugTaxScan(campaign)}
                             className="px-3 py-1 text-xs border border-yellow-400/60 text-yellow-300 hover:bg-yellow-500 hover:text-black font-mono rounded transition-colors"
                           >
-                            ⏸ STOP
+                            DEBUG
                           </button>
-                        )}
-                        {isStopped && (
-                          <button
-                            onClick={() => handleResumeAutoScan(campaign)}
-                            className="px-3 py-1 text-xs border border-green-400/60 text-green-300 hover:bg-green-500 hover:text-black font-mono rounded transition-colors"
+                          <a
+                            href={`/tax-leaderboard/${campaign.id}`}
+                            target="_blank"
+                            rel="noopener noreferrer"
+                            className="px-3 py-1 text-xs border border-cyan-400/60 text-cyan-300 hover:bg-cyan-500 hover:text-black font-mono rounded transition-colors"
                           >
-                            ▶ RESUME
+                            VIEW
+                          </a>
+                          <button
+                            onClick={() => handleResetTaxCampaign(campaign.id)}
+                            className="px-3 py-1 text-xs border border-orange-400/60 text-orange-300 hover:bg-orange-500 hover:text-black font-mono rounded transition-colors"
+                          >
+                            RESET DATA
                           </button>
-                        )}
-                        <button
-                          onClick={() => handleRunTaxScript(campaign)}
-                          className="px-3 py-1 text-xs border border-purple-400/60 text-purple-300 hover:bg-purple-500 hover:text-black font-mono rounded transition-colors"
-                        >
-                          MANUAL SCAN
-                        </button>
-                        <button
-                          onClick={() => handleDebugTaxScan(campaign)}
-                          className="px-3 py-1 text-xs border border-yellow-400/60 text-yellow-300 hover:bg-yellow-500 hover:text-black font-mono rounded transition-colors"
-                        >
-                          DEBUG
-                        </button>
-                        <a
-                          href={`/tax-leaderboard/${campaign.id}`}
-                          target="_blank"
-                          rel="noopener noreferrer"
-                          className="px-3 py-1 text-xs border border-cyan-400/60 text-cyan-300 hover:bg-cyan-500 hover:text-black font-mono rounded transition-colors"
-                        >
-                          VIEW
-                        </a>
-                        <button
-                          onClick={() => handleResetTaxCampaign(campaign.id)}
-                          className="px-3 py-1 text-xs border border-orange-400/60 text-orange-300 hover:bg-orange-500 hover:text-black font-mono rounded transition-colors"
-                        >
-                          RESET DATA
-                        </button>
-                        <button
-                          onClick={() => handleDeleteTaxCampaign(campaign.id)}
-                          className="px-3 py-1 text-xs border border-red-400/60 text-red-300 hover:bg-red-500 hover:text-black font-mono rounded transition-colors"
-                        >
-                          DELETE
-                        </button>
+                          <button
+                            onClick={() => handleDeleteTaxCampaign(campaign.id)}
+                            className="px-3 py-1 text-xs border border-red-400/60 text-red-300 hover:bg-red-500 hover:text-black font-mono rounded transition-colors"
+                          >
+                            DELETE
+                          </button>
+                        </div>
                       </div>
                     </div>
-                  </div>
                   );
                 })
               )}
@@ -2430,14 +2430,13 @@ export default function AdminPage() {
                   {trenchshareCampaigns.map((campaign) => (
                     <div
                       key={campaign.id}
-                      className={`border rounded-lg p-4 transition ${
-                        selectedTrenchshareCampaign?.id === campaign.id
-                          ? 'border-pink-500 bg-pink-500/10'
-                          : 'border-white/10 hover:border-white/30'
-                      }`}
+                      className={`border rounded-lg p-4 transition ${selectedTrenchshareCampaign?.id === campaign.id
+                        ? 'border-pink-500 bg-pink-500/10'
+                        : 'border-white/10 hover:border-white/30'
+                        }`}
                     >
                       <div className="flex items-center justify-between">
-                        <div 
+                        <div
                           className="cursor-pointer flex-1"
                           onClick={() => {
                             setSelectedTrenchshareCampaign(campaign);
@@ -2447,8 +2446,8 @@ export default function AdminPage() {
                           <div className="flex items-center gap-3">
                             {campaign.imageUrl && (
                               <div className="w-8 h-8 rounded bg-[#00ff41]/10 border border-[#00ff41]/30 flex items-center justify-center overflow-hidden flex-shrink-0">
-                                <img 
-                                  src={campaign.imageUrl} 
+                                <img
+                                  src={campaign.imageUrl}
                                   alt={campaign.name}
                                   className="w-full h-full object-cover"
                                 />
@@ -2622,28 +2621,37 @@ export default function AdminPage() {
                             <p className="text-xs text-white/50 font-mono">{new Date(sub.submittedAt).toLocaleString('en-US')}</p>
                           </div>
                           <div className="flex items-center gap-2">
-                            <span className={`text-xs px-2 py-0.5 rounded ${
-                              sub.status === 'approved' ? 'bg-green-500/20 text-green-400' :
+                            <span className={`text-xs px-2 py-0.5 rounded ${sub.status === 'approved' ? 'bg-green-500/20 text-green-400' :
                               sub.status === 'rejected' ? 'bg-red-500/20 text-red-400' :
-                              'bg-yellow-500/20 text-yellow-400'
-                            }`}>
+                                'bg-yellow-500/20 text-yellow-400'
+                              }`}>
                               {sub.status === 'approved' ? 'APPROVED' : sub.status === 'rejected' ? 'REJECTED' : 'PENDING'}
                             </span>
                             <span className="text-xs text-purple-400 font-mono">{sub.points} Points</span>
                           </div>
                         </div>
                         <div className="space-y-1 mb-3">
-                          {sub.posts.map((post, pIdx) => (
-                            <a
-                              key={pIdx}
-                              href={post}
-                              target="_blank"
-                              rel="noopener noreferrer"
-                              className="block text-xs text-cyan-400 hover:underline font-mono truncate"
-                            >
-                              {post}
-                            </a>
-                          ))}
+                          {sub.posts.map((post, pIdx) => {
+                            let postUrl = '';
+                            if (typeof post === 'string') {
+                              postUrl = post;
+                            } else if (post && typeof post === 'object') {
+                              // Ensure url is a string, otherwise stringify the object to debug
+                              postUrl = typeof post.url === 'string' ? post.url : JSON.stringify(post);
+                            }
+
+                            return (
+                              <a
+                                key={pIdx}
+                                href={typeof postUrl === 'string' && postUrl.startsWith('http') ? postUrl : '#'}
+                                target="_blank"
+                                rel="noopener noreferrer"
+                                className="block text-xs text-cyan-400 hover:underline font-mono truncate"
+                              >
+                                {postUrl}
+                              </a>
+                            );
+                          })}
                         </div>
                         <div className="flex items-center gap-2">
                           <input
