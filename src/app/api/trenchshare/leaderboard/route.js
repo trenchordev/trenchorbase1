@@ -16,15 +16,32 @@ export async function GET(request) {
     const leaderboardKey = `trenchshare:leaderboard:${campaignId}`;
 
     // Get top 100 from sorted set (descending order)
-    // Get top 100 from sorted set (descending order)
     const entries = await redis.zrange(leaderboardKey, 0, 99, { rev: true, withScores: true });
 
-    // Parse entries into array of {wallet, points}
-    const leaderboard = entries.map((entry, index) => ({
-      wallet: entry.member,
-      points: entry.score,
-      rank: index + 1
-    }));
+    // Parse entries which can be either [{ member, score }, ...] or [member, score, ...]
+    const leaderboard = [];
+
+    if (entries && entries.length > 0) {
+      // Check if it's an array of objects (modern Upstash)
+      if (typeof entries[0] === 'object' && entries[0] !== null && 'member' in entries[0]) {
+        entries.forEach((entry, index) => {
+          leaderboard.push({
+            wallet: entry.member,
+            points: entry.score,
+            rank: index + 1
+          });
+        });
+      } else {
+        // Handle flat array [member, score, member, score...]
+        for (let i = 0; i < entries.length; i += 2) {
+          leaderboard.push({
+            wallet: entries[i],
+            points: Number(entries[i + 1]),
+            rank: (i / 2) + 1
+          });
+        }
+      }
+    }
 
     // Get campaign info
     const campaign = await redis.hgetall(`trenchshare:campaign:${campaignId}`);
