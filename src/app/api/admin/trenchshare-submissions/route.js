@@ -1,3 +1,4 @@
+
 import { NextResponse } from 'next/server';
 import { redis } from '@/lib/redis';
 import { cookies } from 'next/headers';
@@ -22,8 +23,16 @@ export async function GET(request) {
       return NextResponse.json({ error: 'Campaign ID is required' }, { status: 400 });
     }
 
-    // Use the set of submissions instead of scanning keys
-    const submissionWallets = await redis.smembers(`trenchshare:campaign:${campaignId}:submissions`);
+    // Try to get from Set first (Performance)
+    let submissionWallets = await redis.smembers(`trenchshare:campaign:${campaignId}:submissions`);
+
+    // Fallback: If set is empty (migration/legacy/bug), try scanning keys
+    if (!submissionWallets || submissionWallets.length === 0) {
+      // console.log('[TrenchShare] Set empty, scanning keys...');
+      const keys = await redis.keys(`trenchshare:submission:${campaignId}:*`);
+      submissionWallets = keys.map(k => k.split(':').pop());
+    }
+
     const submissions = [];
 
     for (const wallet of submissionWallets) {
@@ -31,10 +40,18 @@ export async function GET(request) {
       const submission = await redis.hgetall(key);
 
       if (submission && submission.posts) {
+        let posts = [];
+        try {
+          posts = typeof submission.posts === 'string' ? JSON.parse(submission.posts) : submission.posts;
+        } catch (e) {
+          console.error(`Error parsing posts for ${wallet}:`, e);
+          posts = [];
+        }
+
         submissions.push({
           campaignId: submission.campaignId,
           wallet: submission.wallet,
-          posts: JSON.parse(submission.posts),
+          posts: posts,
           status: submission.status || 'pending',
           points: parseInt(submission.points) || 0,
           timestamp: submission.timestamp,
