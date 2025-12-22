@@ -118,7 +118,7 @@ export async function PUT(request) {
       });
 
       // Update leaderboard sorted set
-      await redis.zadd('trenchshare:leaderboard', { score: totalPoints, member: wallet.toLowerCase() });
+      await redis.zadd(`trenchshare:leaderboard:${campaignId}`, { score: totalPoints, member: wallet.toLowerCase() });
     }
 
     return NextResponse.json({ success: true });
