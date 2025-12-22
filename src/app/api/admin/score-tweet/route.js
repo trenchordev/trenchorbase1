@@ -13,7 +13,7 @@ export async function POST(request) {
     }
 
     const submissionKey = `trenchshare:submission:${campaignId}:${wallet.toLowerCase()}`;
-    
+
     // Get existing submission
     const submission = await redis.hgetall(submissionKey);
     if (!submission || !submission.posts) {
@@ -54,13 +54,13 @@ export async function POST(request) {
     // Update leaderboard if approved
     if (finalScore > 0) {
       const leaderboardKey = `trenchshare:leaderboard:${campaignId}`;
-      await redis.zadd(leaderboardKey, totalPoints, wallet.toLowerCase());
+      await redis.zadd(leaderboardKey, { score: totalPoints, member: wallet.toLowerCase() });
     }
 
-    return NextResponse.json({ 
-      success: true, 
+    return NextResponse.json({
+      success: true,
       submission: { ...submission, posts, points: totalPoints },
-      message: `Tweet ${finalScore > 0 ? 'approved' : 'rejected'} successfully` 
+      message: `Tweet ${finalScore > 0 ? 'approved' : 'rejected'} successfully`
     });
   } catch (error) {
     console.error('Error scoring tweet:', error);
