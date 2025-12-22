@@ -22,11 +22,14 @@ export async function GET(request) {
       return NextResponse.json({ error: 'Campaign ID is required' }, { status: 400 });
     }
 
-    const submissionKeys = await redis.keys(`trenchshare:submission:${campaignId}:*`);
+    // Use the set of submissions instead of scanning keys
+    const submissionWallets = await redis.smembers(`trenchshare:campaign:${campaignId}:submissions`);
     const submissions = [];
 
-    for (const key of submissionKeys) {
+    for (const wallet of submissionWallets) {
+      const key = `trenchshare:submission:${campaignId}:${wallet}`;
       const submission = await redis.hgetall(key);
+
       if (submission && submission.posts) {
         submissions.push({
           campaignId: submission.campaignId,
@@ -83,11 +86,11 @@ export async function PUT(request) {
     if (points !== undefined && points > 0) {
       const pointsKey = `trenchshare:points:${wallet.toLowerCase()}`;
       const currentPoints = await redis.hgetall(pointsKey);
-      
-      const oldCampaignPoints = parseInt(currentPoints?.campaigns ? 
+
+      const oldCampaignPoints = parseInt(currentPoints?.campaigns ?
         (JSON.parse(currentPoints.campaigns)[campaignId] || 0) : 0);
       const totalPoints = parseInt(currentPoints?.total || 0) - oldCampaignPoints + points;
-      
+
       const campaigns = currentPoints?.campaigns ? JSON.parse(currentPoints.campaigns) : {};
       campaigns[campaignId] = points;
 
