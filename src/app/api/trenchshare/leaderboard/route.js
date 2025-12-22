@@ -14,24 +14,22 @@ export async function GET(request) {
     }
 
     const leaderboardKey = `trenchshare:leaderboard:${campaignId}`;
-    
+
     // Get top 100 from sorted set (descending order)
-    const entries = await redis.zrevrange(leaderboardKey, 0, 99, 'WITHSCORES');
-    
+    // Get top 100 from sorted set (descending order)
+    const entries = await redis.zrange(leaderboardKey, 0, 99, { rev: true, withScores: true });
+
     // Parse entries into array of {wallet, points}
-    const leaderboard = [];
-    for (let i = 0; i < entries.length; i += 2) {
-      leaderboard.push({
-        wallet: entries[i],
-        points: parseInt(entries[i + 1]),
-        rank: (i / 2) + 1
-      });
-    }
+    const leaderboard = entries.map((entry, index) => ({
+      wallet: entry.member,
+      points: entry.score,
+      rank: index + 1
+    }));
 
     // Get campaign info
     const campaign = await redis.hgetall(`trenchshare:campaign:${campaignId}`);
 
-    return NextResponse.json({ 
+    return NextResponse.json({
       leaderboard,
       campaign,
       totalParticipants: leaderboard.length
