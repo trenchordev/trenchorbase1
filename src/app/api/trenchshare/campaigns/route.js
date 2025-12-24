@@ -30,12 +30,16 @@ export async function GET() {
           id: campaign.id,
           name: campaign.name,
           description: campaign.description || '',
+          // --- DÜZELTME BURADA YAPILDI ---
+          // Veritabanındaki resim yolunu frontend'e gönderiyoruz:
+          imageUrl: campaign.imageUrl || campaign.image_url || '', 
+          // --------------------------------
           startDate: campaign.startDate,
           endDate: campaign.endDate,
           maxPosts: parseInt(campaign.maxPosts) || 10,
           status: campaign.active === 'true' ? 'active' : 'inactive',
           participantCount: participantCount || 0,
-          submissionCount: submissionKeys.length || 0,
+          submissionCount: submissionKeys.length || 0
         });
       }
     }
