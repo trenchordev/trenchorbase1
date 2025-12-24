@@ -138,9 +138,9 @@ export default function TrenchShareCampaignsPage() {
                     {/* Logo - Ortalanmış, büyük */}
                     <div className="flex justify-center pt-3 pb-5">
                       <div className="w-20 h-20 rounded-xl bg-[#00ff41]/10 border border-[#00ff41]/30 flex items-center justify-center overflow-hidden">
-                        {campaign.imageUrl ? (
+                        {(campaign.imageUrl || campaign.image_url || campaign.image) ? (
                           <img 
-                            src={campaign.imageUrl} 
+                            src={campaign.imageUrl || campaign.image_url || campaign.image} 
                             alt={campaign.name}
                             className="w-full h-full object-cover"
                           />
