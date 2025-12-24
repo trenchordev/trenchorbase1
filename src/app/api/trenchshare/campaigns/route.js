@@ -35,7 +35,9 @@ export async function GET() {
           maxPosts: parseInt(campaign.maxPosts) || 10,
           status: campaign.active === 'true' ? 'active' : 'inactive',
           participantCount: participantCount || 0,
-          submissionCount: submissionKeys.length || 0
+          submissionCount: submissionKeys.length || 0,
+          image_url: true,
+          imageUrl: true
         });
       }
     }
