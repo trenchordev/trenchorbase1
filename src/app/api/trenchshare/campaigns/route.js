@@ -36,8 +36,7 @@ export async function GET() {
           status: campaign.active === 'true' ? 'active' : 'inactive',
           participantCount: participantCount || 0,
           submissionCount: submissionKeys.length || 0,
-          image_url: true,
-          imageUrl: true
+          imageUrl: c.imageUrl || c.image_url
         });
       }
     }
