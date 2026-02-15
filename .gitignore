@@ -1,0 +1,51 @@
+# Dependencies
+node_modules/
+# Dependencies
+node_modules/
+
+# Next.js
+.next/
+out/
+
+# Environment files
+.env
+.env.*
+!.env.example
+
+# OS files
+.DS_Store
+Thumbs.db
+*.exe
+*.dll
+*.so
+*.dylib
+
+# IDE
+.vscode/
+.idea/
+
+# Vercel
+.vercel/
+
+# Logs
+*.log
+npm-debug.log*
+
+# Media files (Large assets)
+*.mp4
+*.mov
+*.avi
+*.png
+*.jpg
+*.jpeg
+*.gif
+*.svg
+*.ico
+*.pdf
+*.zip
+*.tar
+*.gz
+
+# Build
+dist/
+build/
