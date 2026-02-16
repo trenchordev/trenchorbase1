@@ -112,6 +112,10 @@ async function handleNewTask(job) {
         const deliverable = formatTaxReport(report);
         console.log(`\n📤 Delivering results for Job ${jobId}...`);
 
+        // Wait 10 seconds to ensure network stability
+        console.log("⏳ Waiting 10s for network settlement before delivery...");
+        await new Promise(resolve => setTimeout(resolve, 10000));
+
         try {
             // Deliver the result
             const result = await job.deliver(deliverable);
