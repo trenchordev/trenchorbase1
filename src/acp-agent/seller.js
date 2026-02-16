@@ -103,28 +103,14 @@ async function handleNewTask(job) {
         await job.accept(`Accepted! Starting tax calculation for token ${tokenAddress}...`);
         console.log(`✅ Job ${jobId} accepted`);
 
-        // Send progress notification
-        await job.createNotification(`🔍 Starting tax scan for token ${tokenAddress}. This may take a few minutes...`);
-
         // Calculate tax
         const report = await calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
-            // Send progress notifications at key milestones
-            if (percent === 10 || percent === 50 || percent === 75 || percent === 95) {
-                try {
-                    await job.createNotification(`⏳ Progress: ${percent}% - ${message}`);
-                } catch (e) {
-                    // Notification failures shouldn't stop the calculation
-                    console.warn(`⚠️ Failed to send notification: ${e.message}`);
-                }
-            }
+            console.log(`⏳ Progress: ${percent}% - ${message}`);
         });
 
         // Format the report as a deliverable
         const deliverable = formatTaxReport(report);
         console.log(`\n📤 Delivering results for Job ${jobId}...`);
-
-        // Wait 2 seconds to avoid nonce issues with previous notifications
-        await new Promise(resolve => setTimeout(resolve, 2000));
 
         try {
             // Deliver the result
