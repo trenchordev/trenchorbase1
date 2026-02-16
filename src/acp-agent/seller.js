@@ -109,8 +109,9 @@ async function handleNewTask(job) {
         });
 
         // Format the report as a deliverable
-        const deliverable = formatTaxReport(report);
-        console.log(`\n📤 Delivering results for Job ${jobId}...`);
+        // DEBUG: Sending minimal payload to prevent out-of-gas/revert issues
+        const deliverable = `Tax Scan Complete. Total Tax: ${report.totalTaxVirtual} VIRTUAL`;
+        console.log(`\n📤 Delivering results for Job ${jobId}... (Payload: "${deliverable}")`);
 
         // Wait 10 seconds to ensure network stability
         console.log("⏳ Waiting 10s for network settlement before delivery...");
