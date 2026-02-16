@@ -123,9 +123,17 @@ async function handleNewTask(job) {
         const deliverable = formatTaxReport(report);
         console.log(`\n📤 Delivering results for Job ${jobId}...`);
 
-        // Deliver the result
-        await job.deliver(deliverable);
-        console.log(`✅ Job ${jobId} completed successfully!`);
+        // Wait 2 seconds to avoid nonce issues with previous notifications
+        await new Promise(resolve => setTimeout(resolve, 2000));
+
+        try {
+            // Deliver the result
+            await job.deliver(deliverable);
+            console.log(`✅ Job ${jobId} completed successfully!`);
+        } catch (deliverErr) {
+            console.error(`❌ Failed to deliver job ${jobId}:`, deliverErr);
+            throw deliverErr;
+        }
 
     } catch (err) {
         console.error(`❌ Error processing Job ${jobId}:`, err);
