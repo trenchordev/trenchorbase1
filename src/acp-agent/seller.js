@@ -114,8 +114,10 @@ async function handleNewTask(job) {
 
         try {
             // Deliver the result
-            await job.deliver(deliverable);
+            const result = await job.deliver(deliverable);
             console.log(`✅ Job ${jobId} completed successfully!`);
+            console.log(`🧾 Transaction Hash: ${result.txnHash}`);
+            console.log(`🔑 UserOp Hash: ${result.userOpHash}`);
         } catch (deliverErr) {
             console.error(`❌ Failed to deliver job ${jobId}:`, deliverErr);
             throw deliverErr;
