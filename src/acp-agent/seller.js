@@ -36,9 +36,8 @@ if (existsSync(envPath)) {
 const AGENT_PRIVATE_KEY = process.env.ACP_AGENT_WALLET_PRIVATE_KEY;
 const AGENT_WALLET = process.env.ACP_AGENT_WALLET_ADDRESS;
 const ENTITY_ID = parseInt(process.env.ACP_ENTITY_ID || '0');
-// Use the robust Alchemy Proxy RPC from Virtuals Protocol to avoid rate limits
-// Append chainId=8453 for Base Mainnet to ensure correct routing
-const RPC_URL = 'https://alchemy-proxy-prod.virtuals.io/api/proxy/rpc?chainId=8453';
+// RPC for on-chain data fetching (tax calculation)
+const RPC_URL = process.env.BASE_RPC_URL || 'https://mainnet.base.org';
 
 // ─── Validation ──────────────────────────────────────────────────────────────
 
@@ -75,66 +74,105 @@ function extractTokenAddress(requirement) {
 }
 
 /**
- * Handles an incoming job request.
- * Called by ACP SDK when a new job is assigned to this agent.
+ * ACP Job Lifecycle Handler (Multi-Phase)
+ * 
+ * The ACP protocol uses a state machine with phases:
+ *   Phase 0: REQUEST      → Provider responds with job.respond(true)
+ *   Phase 1: NEGOTIATION  → Buyer pays with job.payAndAcceptRequirement()
+ *   Phase 2: TRANSACTION  → Provider does work and calls job.deliver()
+ *   Phase 3: EVALUATION   → Buyer evaluates with job.evaluate(true)
+ *   Phase 4: COMPLETED    → Done!
+ * 
+ * onNewTask fires at EVERY phase transition. We must check job.phase
+ * and only act when it's our turn (Phase 0 and Phase 2).
  */
 async function handleNewTask(job) {
     const jobId = job.id;
+    const phase = job.phase;
+
     console.log(`\n${'═'.repeat(60)}`);
-    console.log(`📥 New Job Received! Job ID: ${jobId}`);
+    console.log(`📥 Job Event — ID: ${jobId} | Phase: ${phase}`);
     console.log(`   Client: ${job.clientAddress}`);
-    console.log(`   Phase: ${job.phase}`);
     console.log(`${'═'.repeat(60)}`);
 
     try {
-        // Extract requirement from job
-        const requirement = job.requirement || job.memos?.[0]?.content;
-        console.log(`📋 Requirement:`, requirement);
+        // ─── PHASE 0: REQUEST → Accept & Send Requirement ────────────────
+        if (phase === 0) {
+            console.log(`🔄 Phase 0: Accepting job and sending requirement memo...`);
 
-        const tokenAddress = extractTokenAddress(requirement);
+            // Extract requirement to validate the request
+            const requirement = job.requirement || job.memos?.[0]?.content;
+            console.log(`📋 Requirement:`, requirement);
 
-        if (!tokenAddress) {
-            console.error(`❌ No valid token address found in requirement`);
-            await job.reject('No valid token address provided. Please provide an Ethereum token address (0x...).');
+            const tokenAddress = extractTokenAddress(requirement);
+            if (!tokenAddress) {
+                console.error(`❌ No valid token address found in requirement`);
+                await job.respond(false, 'No valid token address provided. Please provide an Ethereum token address (0x...).');
+                return;
+            }
+
+            console.log(`✅ Token address extracted: ${tokenAddress}`);
+
+            // respond(true) = accept() + createRequirement() 
+            // This advances the job from REQUEST → NEGOTIATION and signals the Buyer to pay
+            const respondResult = await job.respond(true, `Accepted! Will calculate tax for token ${tokenAddress}.`);
+            console.log(`✅ Job ${jobId} accepted & requirement sent`);
+            if (respondResult?.txnHash) {
+                console.log(`🧾 Respond TxHash: ${respondResult.txnHash}`);
+            }
+            return; // Wait for Buyer to pay → Phase 2 callback
+        }
+
+        // ─── PHASE 2: TRANSACTION → Do Work & Deliver ────────────────────
+        if (phase === 2) {
+            console.log(`🔄 Phase 2: Buyer has paid. Starting work...`);
+
+            // Extract token address from original requirement
+            const requirement = job.requirement || job.memos?.[0]?.content;
+            const tokenAddress = extractTokenAddress(requirement);
+
+            if (!tokenAddress) {
+                console.error(`❌ Cannot extract token address for delivery`);
+                return;
+            }
+
+            console.log(`🔬 Calculating tax for: ${tokenAddress}`);
+
+            // Calculate tax
+            const report = await calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
+                console.log(`⏳ Progress: ${percent}% - ${message}`);
+            });
+
+            // Format the report as a deliverable
+            const deliverable = formatTaxReport(report);
+            console.log(`\n📤 Delivering results for Job ${jobId}...`);
+
+            // Brief delay for network settlement
+            console.log("⏳ Waiting 5s for network settlement before delivery...");
+            await new Promise(resolve => setTimeout(resolve, 5000));
+
+            // Deliver the result → advances job to EVALUATION phase
+            const result = await job.deliver(deliverable);
+            console.log(`✅ Job ${jobId} delivered successfully!`);
+            if (result?.txnHash) {
+                console.log(`🧾 Deliver TxHash: ${result.txnHash}`);
+            }
+            if (result?.userOpHash) {
+                console.log(`🔑 UserOp Hash: ${result.userOpHash}`);
+            }
             return;
         }
 
-        console.log(`✅ Token address extracted: ${tokenAddress}`);
-
-        // Accept the job
-        await job.accept(`Accepted! Starting tax calculation for token ${tokenAddress}...`);
-        console.log(`✅ Job ${jobId} accepted`);
-
-        // Calculate tax
-        const report = await calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
-            console.log(`⏳ Progress: ${percent}% - ${message}`);
-        });
-
-        // Format the report as a deliverable
-        const deliverable = formatTaxReport(report);
-        console.log(`\n📤 Delivering results for Job ${jobId}...`);
-
-        // Wait 10 seconds to ensure network stability
-        console.log("⏳ Waiting 10s for network settlement before delivery...");
-        await new Promise(resolve => setTimeout(resolve, 10000));
-
-        try {
-            // Deliver the result
-            const result = await job.deliver(deliverable);
-            console.log(`✅ Job ${jobId} completed successfully!`);
-            console.log(`🧾 Transaction Hash: ${result.txnHash}`);
-            console.log(`🔑 UserOp Hash: ${result.userOpHash}`);
-        } catch (deliverErr) {
-            console.error(`❌ Failed to deliver job ${jobId}:`, deliverErr);
-            throw deliverErr;
-        }
+        // ─── OTHER PHASES: Not our responsibility ────────────────────────
+        console.log(`ℹ️ Phase ${phase} — Not a Provider action phase. Ignoring.`);
 
     } catch (err) {
-        console.error(`❌ Error processing Job ${jobId}:`, err);
+        console.error(`❌ Error in Job ${jobId} (Phase ${phase}):`, err.message || err);
 
         try {
-            // Try to reject the job with error details
-            await job.reject(`Error calculating tax: ${err.message}`);
+            if (phase === 0) {
+                await job.respond(false, `Error: ${err.message}`);
+            }
         } catch (rejectErr) {
             console.error(`❌ Failed to reject job:`, rejectErr.message);
         }
