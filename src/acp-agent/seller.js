@@ -37,7 +37,8 @@ const AGENT_PRIVATE_KEY = process.env.ACP_AGENT_WALLET_PRIVATE_KEY;
 const AGENT_WALLET = process.env.ACP_AGENT_WALLET_ADDRESS;
 const ENTITY_ID = parseInt(process.env.ACP_ENTITY_ID || '0');
 // Use the robust Alchemy Proxy RPC from Virtuals Protocol to avoid rate limits
-const RPC_URL = 'https://alchemy-proxy-prod.virtuals.io/api/proxy/rpc';
+// Append chainId=8453 for Base Mainnet to ensure correct routing
+const RPC_URL = 'https://alchemy-proxy-prod.virtuals.io/api/proxy/rpc?chainId=8453';
 
 // ─── Validation ──────────────────────────────────────────────────────────────
 
