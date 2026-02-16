@@ -4,6 +4,11 @@
  * This is the main ACP Agent process that runs as a Provider on Virtual Protocol.
  * It listens for incoming job requests, calculates token tax, and delivers results.
  * 
+ * Features:
+ *   - Multi-phase ACP lifecycle (Phase 0: respond, Phase 2: deliver)
+ *   - Request validation & rejection for invalid/inappropriate requests
+ *   - Job queue with concurrency control for scalability
+ * 
  * Usage:
  *   node src/acp-agent/seller.js
  * 
@@ -21,6 +26,8 @@ import { calculateTax, formatTaxReport } from './acpTaxCalculator.js';
 import { config } from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import { createPublicClient, http } from 'viem';
+import { base } from 'viem/chains';
 
 // ─── Load Environment ────────────────────────────────────────────────────────
 
@@ -50,7 +57,41 @@ if (!AGENT_PRIVATE_KEY || !AGENT_WALLET || !ENTITY_ID) {
     process.exit(1);
 }
 
-// ─── Job Processing ──────────────────────────────────────────────────────────
+// ─── Job Queue ───────────────────────────────────────────────────────────────
+// Simple in-memory queue to handle concurrent job requests without overloading
+
+const MAX_CONCURRENT_JOBS = 3;
+let activeJobs = 0;
+const jobQueue = [];
+let jobStats = { accepted: 0, rejected: 0, delivered: 0, failed: 0 };
+
+function logQueueStatus() {
+    console.log(`📊 Queue: ${activeJobs} active, ${jobQueue.length} waiting | Stats: ✅${jobStats.delivered} 🚫${jobStats.rejected} ❌${jobStats.failed}`);
+}
+
+async function enqueueJob(job) {
+    if (activeJobs < MAX_CONCURRENT_JOBS) {
+        activeJobs++;
+        logQueueStatus();
+        try {
+            await processJob(job);
+        } finally {
+            activeJobs--;
+            // Process next job in queue if any
+            if (jobQueue.length > 0) {
+                const nextJob = jobQueue.shift();
+                console.log(`📤 Dequeuing next job from queue...`);
+                enqueueJob(nextJob); // Don't await — fire and forget to not block
+            }
+        }
+    } else {
+        console.log(`⏳ Queue full (${activeJobs}/${MAX_CONCURRENT_JOBS} active). Queuing job ${job.id}...`);
+        jobQueue.push(job);
+        logQueueStatus();
+    }
+}
+
+// ─── Request Validation ──────────────────────────────────────────────────────
 
 /**
  * Extracts token address from a job's requirement.
@@ -74,6 +115,46 @@ function extractTokenAddress(requirement) {
 }
 
 /**
+ * Validates a token address to ensure it's a real contract on Base chain.
+ * Returns { valid: true } or { valid: false, reason: string }
+ */
+async function validateTokenAddress(tokenAddress) {
+    // 1. Basic format check
+    if (!tokenAddress || typeof tokenAddress !== 'string') {
+        return { valid: false, reason: 'No token address provided.' };
+    }
+
+    if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
+        return { valid: false, reason: `Invalid token address format: "${tokenAddress}". Must be a 42-character hex string starting with 0x.` };
+    }
+
+    // 2. Not a zero/burn address
+    if (tokenAddress === '0x0000000000000000000000000000000000000000') {
+        return { valid: false, reason: 'Cannot analyze the zero address.' };
+    }
+
+    // 3. On-chain contract existence check
+    try {
+        const client = createPublicClient({
+            chain: base,
+            transport: http(RPC_URL, { retryCount: 2, retryDelay: 500 }),
+        });
+
+        const code = await client.getCode({ address: tokenAddress });
+        if (!code || code === '0x' || code === '0x0') {
+            return { valid: false, reason: `Address ${tokenAddress} is not a contract on Base chain (no bytecode found). Please provide a valid token contract address.` };
+        }
+    } catch (err) {
+        console.warn(`⚠️ Contract check failed (RPC issue): ${err.message}`);
+        // Don't reject on RPC errors — allow the job to proceed
+    }
+
+    return { valid: true };
+}
+
+// ─── Job Processing ──────────────────────────────────────────────────────────
+
+/**
  * ACP Job Lifecycle Handler (Multi-Phase)
  * 
  * The ACP protocol uses a state machine with phases:
@@ -86,7 +167,7 @@ function extractTokenAddress(requirement) {
  * onNewTask fires at EVERY phase transition. We must check job.phase
  * and only act when it's our turn (Phase 0 and Phase 2).
  */
-async function handleNewTask(job) {
+async function processJob(job) {
     const jobId = job.id;
     const phase = job.phase;
 
@@ -96,22 +177,45 @@ async function handleNewTask(job) {
     console.log(`${'═'.repeat(60)}`);
 
     try {
-        // ─── PHASE 0: REQUEST → Accept & Send Requirement ────────────────
+        // ─── PHASE 0: REQUEST → Validate & Accept/Reject ────────────────
         if (phase === 0) {
-            console.log(`🔄 Phase 0: Accepting job and sending requirement memo...`);
+            console.log(`🔄 Phase 0: Validating request...`);
 
-            // Extract requirement to validate the request
+            // Extract requirement
             const requirement = job.requirement || job.memos?.[0]?.content;
             console.log(`📋 Requirement:`, requirement);
 
-            const tokenAddress = extractTokenAddress(requirement);
-            if (!tokenAddress) {
-                console.error(`❌ No valid token address found in requirement`);
-                await job.respond(false, 'No valid token address provided. Please provide an Ethereum token address (0x...).');
+            // Check for empty/missing requirement
+            if (!requirement || (typeof requirement === 'string' && requirement.trim().length === 0)) {
+                console.log(`🚫 REJECTING: Empty or missing requirement`);
+                jobStats.rejected++;
+                await job.respond(false, 'Request rejected: No requirement provided. Please include a token contract address (0x...) for tax analysis.');
+                logQueueStatus();
                 return;
             }
 
-            console.log(`✅ Token address extracted: ${tokenAddress}`);
+            // Extract token address
+            const tokenAddress = extractTokenAddress(requirement);
+            if (!tokenAddress) {
+                console.log(`🚫 REJECTING: No valid token address in requirement`);
+                jobStats.rejected++;
+                await job.respond(false, 'Request rejected: No valid Ethereum token address found. Please provide a 42-character hex address starting with 0x.');
+                logQueueStatus();
+                return;
+            }
+
+            // Validate the token address on-chain
+            const validation = await validateTokenAddress(tokenAddress);
+            if (!validation.valid) {
+                console.log(`🚫 REJECTING: ${validation.reason}`);
+                jobStats.rejected++;
+                await job.respond(false, `Request rejected: ${validation.reason}`);
+                logQueueStatus();
+                return;
+            }
+
+            console.log(`✅ Token address validated: ${tokenAddress}`);
+            jobStats.accepted++;
 
             // respond(true) = accept() + createRequirement() 
             // This advances the job from REQUEST → NEGOTIATION and signals the Buyer to pay
@@ -120,6 +224,7 @@ async function handleNewTask(job) {
             if (respondResult?.txnHash) {
                 console.log(`🧾 Respond TxHash: ${respondResult.txnHash}`);
             }
+            logQueueStatus();
             return; // Wait for Buyer to pay → Phase 2 callback
         }
 
@@ -133,6 +238,8 @@ async function handleNewTask(job) {
 
             if (!tokenAddress) {
                 console.error(`❌ Cannot extract token address for delivery`);
+                jobStats.failed++;
+                logQueueStatus();
                 return;
             }
 
@@ -154,12 +261,14 @@ async function handleNewTask(job) {
             // Deliver the result → advances job to EVALUATION phase
             const result = await job.deliver(deliverable);
             console.log(`✅ Job ${jobId} delivered successfully!`);
+            jobStats.delivered++;
             if (result?.txnHash) {
                 console.log(`🧾 Deliver TxHash: ${result.txnHash}`);
             }
             if (result?.userOpHash) {
                 console.log(`🔑 UserOp Hash: ${result.userOpHash}`);
             }
+            logQueueStatus();
             return;
         }
 
@@ -168,14 +277,16 @@ async function handleNewTask(job) {
 
     } catch (err) {
         console.error(`❌ Error in Job ${jobId} (Phase ${phase}):`, err.message || err);
+        jobStats.failed++;
 
         try {
             if (phase === 0) {
-                await job.respond(false, `Error: ${err.message}`);
+                await job.respond(false, `Error processing request: ${err.message}`);
             }
         } catch (rejectErr) {
             console.error(`❌ Failed to reject job:`, rejectErr.message);
         }
+        logQueueStatus();
     }
 }
 
@@ -189,16 +300,13 @@ async function main() {
     console.log(`\n  Agent Wallet: ${AGENT_WALLET}`);
     console.log(`  Entity ID: ${ENTITY_ID}`);
 
-    // ─── Health Cheek: Check Balance ─────────────────────────────────────────
+    // ─── Health Check: Check Balance ─────────────────────────────────────────
     try {
         console.log(`  Checking wallet balance...`);
-        // Use a public client to fetch balance
-        const publicClient = acpModule.createPublicClient ?
-            acpModule.createPublicClient({ chain: acpModule.base, transport: acpModule.http(RPC_URL) }) :
-            (await import('viem')).createPublicClient({
-                chain: (await import('viem/chains')).base,
-                transport: (await import('viem')).http(RPC_URL)
-            });
+        const publicClient = createPublicClient({
+            chain: base,
+            transport: http(RPC_URL),
+        });
 
         const balance = await publicClient.getBalance({ address: AGENT_WALLET });
         const ethBalance = Number(balance) / 1e18;
@@ -216,6 +324,7 @@ async function main() {
     // ─────────────────────────────────────────────────────────────────────────
 
     console.log(`  RPC URL: ${RPC_URL.substring(0, 30)}...`);
+    console.log(`  Max Concurrent Jobs: ${MAX_CONCURRENT_JOBS}`);
     console.log(`\n  Starting agent initialization...\n`);
 
     try {
@@ -230,9 +339,10 @@ async function main() {
         console.log('✅ ACP Contract Client built successfully');
 
         // Create the ACP client with callbacks
+        // onNewTask is routed through the queue for concurrency control
         const acpClient = new AcpClient({
             acpContractClient,
-            onNewTask: handleNewTask,
+            onNewTask: enqueueJob,
         });
 
         // Initialize the client (connects WebSocket to ACP backend)
@@ -245,17 +355,20 @@ async function main() {
         // Keep the process alive
         process.on('SIGINT', () => {
             console.log('\n\n👋 Agent shutting down...');
+            logQueueStatus();
             process.exit(0);
         });
 
         process.on('SIGTERM', () => {
             console.log('\n\n👋 Agent shutting down...');
+            logQueueStatus();
             process.exit(0);
         });
 
         // Heartbeat log every 5 minutes
         setInterval(() => {
             console.log(`💓 Agent heartbeat — ${new Date().toISOString()} — Waiting for jobs...`);
+            logQueueStatus();
         }, 5 * 60 * 1000);
 
     } catch (err) {
