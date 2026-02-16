@@ -149,6 +149,33 @@ async function main() {
     console.log('═'.repeat(60));
     console.log(`\n  Agent Wallet: ${AGENT_WALLET}`);
     console.log(`  Entity ID: ${ENTITY_ID}`);
+
+    // ─── Health Cheek: Check Balance ─────────────────────────────────────────
+    try {
+        console.log(`  Checking wallet balance...`);
+        // Use a public client to fetch balance
+        const publicClient = acpModule.createPublicClient ?
+            acpModule.createPublicClient({ chain: acpModule.base, transport: acpModule.http(RPC_URL) }) :
+            (await import('viem')).createPublicClient({
+                chain: (await import('viem/chains')).base,
+                transport: (await import('viem')).http(RPC_URL)
+            });
+
+        const balance = await publicClient.getBalance({ address: AGENT_WALLET });
+        const ethBalance = Number(balance) / 1e18;
+        console.log(`💰 Agent Wallet Balance: ${ethBalance.toFixed(6)} ETH`);
+
+        if (ethBalance < 0.0005) {
+            console.warn(`⚠️ LOW BALANCE WARNING! Agent may not be able to pay for gas.`);
+            console.warn(`   Please send at least 0.002 ETH (Base) to ${AGENT_WALLET}`);
+        } else {
+            console.log(`✅ Sufficient gas funds detected.`);
+        }
+    } catch (err) {
+        console.warn(`⚠️ Could not verify balance (RPC issue?): ${err.message}`);
+    }
+    // ─────────────────────────────────────────────────────────────────────────
+
     console.log(`  RPC URL: ${RPC_URL.substring(0, 30)}...`);
     console.log(`\n  Starting agent initialization...\n`);
 
