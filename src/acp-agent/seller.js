@@ -36,7 +36,8 @@ if (existsSync(envPath)) {
 const AGENT_PRIVATE_KEY = process.env.ACP_AGENT_WALLET_PRIVATE_KEY;
 const AGENT_WALLET = process.env.ACP_AGENT_WALLET_ADDRESS;
 const ENTITY_ID = parseInt(process.env.ACP_ENTITY_ID || '0');
-const RPC_URL = process.env.BASE_RPC_URL || 'https://mainnet.base.org';
+// Use the robust Alchemy Proxy RPC from Virtuals Protocol to avoid rate limits
+const RPC_URL = 'https://alchemy-proxy-prod.virtuals.io/api/proxy/rpc';
 
 // ─── Validation ──────────────────────────────────────────────────────────────
 
@@ -109,9 +110,8 @@ async function handleNewTask(job) {
         });
 
         // Format the report as a deliverable
-        // DEBUG: Sending minimal payload to prevent out-of-gas/revert issues
-        const deliverable = `Tax Scan Complete. Total Tax: ${report.totalTaxVirtual} VIRTUAL`;
-        console.log(`\n📤 Delivering results for Job ${jobId}... (Payload: "${deliverable}")`);
+        const deliverable = formatTaxReport(report);
+        console.log(`\n📤 Delivering results for Job ${jobId}...`);
 
         // Wait 10 seconds to ensure network stability
         console.log("⏳ Waiting 10s for network settlement before delivery...");
