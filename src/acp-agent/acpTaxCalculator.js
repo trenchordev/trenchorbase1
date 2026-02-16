@@ -18,8 +18,10 @@ const VIRTUAL_ADDRESS = '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b';
 const TAX_WALLET = '0x32487287c65f11d53bbCa89c2472171eB09bf337';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const BLOCKS_TO_SCAN = 2940;
-const MAX_RETRIES = 3;
+const MAX_RETRIES = 5;
 const INITIAL_CHUNK_SIZE = 500;
+const RECEIPT_BATCH_SIZE = 5;
+const RECEIPT_BATCH_DELAY_MS = 600;
 
 // ─── Viem Client ─────────────────────────────────────────────────────────────
 
@@ -32,6 +34,30 @@ function createBaseClient(rpcUrl) {
             retryDelay: 1000,
         }),
     });
+}
+
+/**
+ * Fetches an RPC result with retry + exponential backoff.
+ * Avoids silent data loss from rate limits.
+ */
+async function fetchWithRetry(client, method, params, maxRetries = MAX_RETRIES) {
+    for (let attempt = 1; attempt <= maxRetries; attempt++) {
+        try {
+            return await client.request({ method, params });
+        } catch (err) {
+            const isRateLimit = err.message?.includes('rate limit') || err.message?.includes('429');
+            if (attempt >= maxRetries) {
+                throw err; // Exhausted retries
+            }
+            const delay = isRateLimit
+                ? 1500 * attempt   // Longer backoff for rate limits
+                : 500 * attempt;   // Standard backoff for other errors
+            if (attempt >= 2) {
+                console.warn(`   ⚠️ ${method} retry ${attempt}/${maxRetries} (waiting ${delay}ms): ${err.message?.substring(0, 80)}`);
+            }
+            await new Promise(r => setTimeout(r, delay));
+        }
+    }
 }
 
 // ─── Launch Block Detection ──────────────────────────────────────────────────
@@ -291,58 +317,73 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
     if (onProgress) onProgress(75, `Processing ${taxTransferLogs.length} transactions...`);
 
     // Step 4: Filter by target token interaction and calculate per-user tax
+    // Process receipts in small batches with delays to avoid RPC rate limits
     const userTaxPaid = new Map();
     let validCount = 0;
     let skippedCount = 0;
     let totalTax = 0n;
 
-    for (let i = 0; i < taxTransferLogs.length; i++) {
-        const log = taxTransferLogs[i];
-        const txHash = log.transactionHash;
-        const taxAmount = BigInt(log.data || '0');
+    for (let batchStart = 0; batchStart < taxTransferLogs.length; batchStart += RECEIPT_BATCH_SIZE) {
+        const batchEnd = Math.min(batchStart + RECEIPT_BATCH_SIZE, taxTransferLogs.length);
+        const batch = taxTransferLogs.slice(batchStart, batchEnd);
 
-        try {
-            // Fetch transaction receipt to check for target token interaction
-            const receipt = await client.request({
-                method: 'eth_getTransactionReceipt',
-                params: [txHash],
-            });
+        // Process batch sequentially (each with retry)
+        for (let j = 0; j < batch.length; j++) {
+            const i = batchStart + j;
+            const log = batch[j];
+            const txHash = log.transactionHash;
+            const taxAmount = BigInt(log.data || '0');
 
-            if (!receipt) {
-                skippedCount++;
-                continue;
-            }
+            try {
+                // Fetch receipt with retry + backoff
+                const receipt = await fetchWithRetry(
+                    client,
+                    'eth_getTransactionReceipt',
+                    [txHash]
+                );
 
-            const userAddress = receipt.from.toLowerCase();
-
-            // Check if transaction also involves the target token
-            let hasTargetTokenInteraction = false;
-            for (const txLog of receipt.logs) {
-                if (txLog.topics[0] !== TRANSFER_TOPIC) continue;
-                if (txLog.address.toLowerCase() === tokenAddress.toLowerCase()) {
-                    hasTargetTokenInteraction = true;
-                    break;
+                if (!receipt) {
+                    console.warn(`⚠️ Null receipt for tx ${txHash} — skipping`);
+                    skippedCount++;
+                    continue;
                 }
-            }
 
-            if (hasTargetTokenInteraction) {
-                const currentTax = userTaxPaid.get(userAddress) || 0n;
-                userTaxPaid.set(userAddress, currentTax + taxAmount);
-                totalTax += taxAmount;
-                validCount++;
-            } else {
+                const userAddress = receipt.from.toLowerCase();
+
+                // Check if transaction also involves the target token
+                let hasTargetTokenInteraction = false;
+                for (const txLog of receipt.logs) {
+                    if (txLog.topics[0] !== TRANSFER_TOPIC) continue;
+                    if (txLog.address.toLowerCase() === tokenAddress.toLowerCase()) {
+                        hasTargetTokenInteraction = true;
+                        break;
+                    }
+                }
+
+                if (hasTargetTokenInteraction) {
+                    const currentTax = userTaxPaid.get(userAddress) || 0n;
+                    userTaxPaid.set(userAddress, currentTax + taxAmount);
+                    totalTax += taxAmount;
+                    validCount++;
+                } else {
+                    skippedCount++;
+                }
+
+                // Progress update every 10 transactions
+                if (i % 10 === 0 && onProgress) {
+                    const txProgress = 75 + Math.round((i / taxTransferLogs.length) * 20);
+                    onProgress(Math.min(txProgress, 95), `Verified ${i + 1}/${taxTransferLogs.length} transactions...`);
+                }
+
+            } catch (err) {
+                console.warn(`⚠️ Error processing tx ${txHash} (after ${MAX_RETRIES} retries):`, err.message);
                 skippedCount++;
             }
+        }
 
-            // Progress update every 10 transactions
-            if (i % 10 === 0 && onProgress) {
-                const txProgress = 75 + Math.round((i / taxTransferLogs.length) * 20);
-                onProgress(Math.min(txProgress, 95), `Verified ${i + 1}/${taxTransferLogs.length} transactions...`);
-            }
-
-        } catch (err) {
-            console.warn(`⚠️ Error processing tx ${txHash}:`, err.message);
-            skippedCount++;
+        // Inter-batch delay to stay under rate limits
+        if (batchEnd < taxTransferLogs.length) {
+            await new Promise(r => setTimeout(r, RECEIPT_BATCH_DELAY_MS));
         }
     }
 
