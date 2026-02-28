@@ -9,7 +9,7 @@
  * If the 2940-block window hasn't elapsed yet, returns partial results.
  */
 
-import { createPublicClient, http, formatEther } from 'viem';
+import { createPublicClient, http, formatEther, fallback } from 'viem';
 import { base } from 'viem/chains';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -18,7 +18,7 @@ const VIRTUAL_ADDRESS = '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b';
 const TAX_WALLET = '0x32487287c65f11d53bbCa89c2472171eB09bf337';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const BLOCKS_TO_SCAN = 2940;
-const MAX_RETRIES = 5;
+const MAX_RETRIES = 10;
 const INITIAL_CHUNK_SIZE = 500;
 const RECEIPT_BATCH_SIZE = 5;
 const RECEIPT_BATCH_DELAY_MS = 600;
@@ -26,13 +26,16 @@ const RECEIPT_BATCH_DELAY_MS = 600;
 // ─── Viem Client ─────────────────────────────────────────────────────────────
 
 function createBaseClient(rpcUrl) {
+    const transports = [];
+    if (rpcUrl) transports.push(http(rpcUrl, { retryCount: 2, retryDelay: 1000 }));
+
+    // Fallback public RPCs to survive 503 "no backend healthy" errors on Base
+    transports.push(http('https://mainnet.base.org', { retryCount: 3, retryDelay: 1000 }));
+    transports.push(http('https://base.llamarpc.com', { retryCount: 3, retryDelay: 1000 }));
+
     return createPublicClient({
         chain: base,
-        transport: http(rpcUrl || 'https://mainnet.base.org', {
-            batch: true,
-            retryCount: 3,
-            retryDelay: 1000,
-        }),
+        transport: fallback(transports, { rank: false }),
     });
 }
 
@@ -77,80 +80,78 @@ async function fetchWithRetry(client, method, params, maxRetries = MAX_RETRIES) 
 export async function findLaunchBlock(tokenAddress, client) {
     console.log(`🔍 Finding launch block for token: ${tokenAddress}`);
 
-    const currentBlock = Number(await client.getBlockNumber());
-    const WINDOW = 2000; // Safe query window for public RPCs
+    // ─── Fast Path: DexScreener API ──────────────────────────────────────────
+    // Eliminates the need for 100s of RPC calls if the token is already trading
+    try {
+        console.log(`🌐 Checking DexScreener for token launch...`);
+        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`);
+        if (!res.ok) throw new Error(`HTTP ${res.status}`);
+        const data = await res.json();
 
-    // ─── Phase 1: Find contract deployment block via eth_getCode binary search ──
-    // eth_getCode returns '0x' (empty) before deployment and non-empty after.
-    // Binary search: O(log₂ n) ≈ 25 calls for ~40M blocks.
+        if (data && data.pairs && data.pairs.length > 0) {
+            const earliestPair = data.pairs.sort((a, b) => a.pairCreatedAt - b.pairCreatedAt)[0];
+            const pairCreatedAt = earliestPair.pairCreatedAt;
+
+            const currentBlock = await client.getBlock({ blockTag: 'latest' });
+            const currentBlockNum = Number(currentBlock.number);
+            const currentTimestamp = Number(currentBlock.timestamp) * 1000;
+
+            // Base chain produces 1 block exactly every 2 seconds
+            const diffMs = currentTimestamp - pairCreatedAt;
+            const diffBlocks = Math.floor(diffMs / 2000);
+            let estimatedBlock = currentBlockNum - diffBlocks;
+
+            // We pad by 200 blocks (~6 mins) just to catch early transfers
+            estimatedBlock = Math.max(0, estimatedBlock - 200);
+
+            console.log(`🚀 Found launch via DexScreener: Approx block ${estimatedBlock}`);
+            return { launchBlock: estimatedBlock, prelaunchBlock: estimatedBlock };
+        }
+    } catch (err) {
+        console.warn(`⚠️ DexScreener check failed or token not found, falling back to on-chain scan: ${err.message}`);
+    }
+
+    // ─── Fallback Path: On-chain Binary Search ───────────────────────────────
+    const currentBlock = Number(await client.getBlockNumber());
+    const WINDOW = 2000;
 
     console.log(`🔎 Phase 1: Finding contract deployment block via binary search...`);
-
     let lo = 0;
     let hi = currentBlock;
-    let deployBlock = currentBlock; // Will narrow this down
+    let deployBlock = currentBlock;
 
     while (lo <= hi) {
         const mid = Math.floor((lo + hi) / 2);
-
         try {
             const code = await client.request({
                 method: 'eth_getCode',
                 params: [tokenAddress, `0x${mid.toString(16)}`],
             });
-
             if (code && code !== '0x' && code !== '0x0') {
-                // Contract exists at this block — deployment was at or before this
                 deployBlock = mid;
                 hi = mid - 1;
             } else {
-                // Contract doesn't exist yet — deployment is after this block
                 lo = mid + 1;
             }
         } catch (err) {
             console.warn(`   ⚠️ getCode error at block ${mid}: ${err.message}`);
-            // On error, try to narrow from both sides
             await new Promise(r => setTimeout(r, 500));
-            lo = mid + 1; // Skip forward to avoid infinite loop
+            lo = mid + 1;
         }
     }
-
     console.log(`📦 Contract deployment block: ${deployBlock}`);
 
-    // ─── Phase 2: Find pre-launch block ──────────────────────────────────
-    // Scan from deployment block forward to find the first Transfer event
-    // (this is the pre-launch/creation block with mint events)
-
+    // Phase 2: Scan forward to find the first event (up to 500k blocks = ~11 days post-deployment)
     let prelaunchBlock = null;
     let scanFrom = deployBlock;
+    console.log(`🔎 Phase 2: Scanning forward from block ${deployBlock} for first transfer...`);
 
-    console.log(`🔎 Phase 2: Finding pre-launch events from block ${deployBlock}...`);
-
-    for (let from = scanFrom; from <= Math.min(deployBlock + 100, currentBlock); from += WINDOW + 1) {
+    for (let from = scanFrom; from <= Math.min(deployBlock + 500000, currentBlock); from += WINDOW + 1) {
         const to = Math.min(from + WINDOW, currentBlock);
-        try {
-            const logs = await client.request({
-                method: 'eth_getLogs',
-                params: [{
-                    address: tokenAddress,
-                    fromBlock: `0x${from.toString(16)}`,
-                    toBlock: `0x${to.toString(16)}`,
-                    topics: [TRANSFER_TOPIC],
-                }],
-            });
-            if (logs.length > 0) {
-                prelaunchBlock = Number(logs[0].blockNumber);
-                break;
-            }
-        } catch (err) {
-            await new Promise(r => setTimeout(r, 500));
-        }
-    }
 
-    if (!prelaunchBlock) {
-        // Wider scan — deployment might not have Transfer events immediately
-        for (let from = deployBlock; from <= Math.min(deployBlock + 50000, currentBlock); from += WINDOW + 1) {
-            const to = Math.min(from + WINDOW, currentBlock);
+        let success = false;
+        let retries = 0;
+        while (!success && retries < 3) {
             try {
                 const logs = await client.request({
                     method: 'eth_getLogs',
@@ -163,67 +164,19 @@ export async function findLaunchBlock(tokenAddress, client) {
                 });
                 if (logs.length > 0) {
                     prelaunchBlock = Number(logs[0].blockNumber);
-                    break;
+                    console.log(`📋 Found first transfer event at block: ${prelaunchBlock}`);
+                    return { launchBlock: prelaunchBlock, prelaunchBlock: prelaunchBlock };
                 }
-            } catch (err) {
-                await new Promise(r => setTimeout(r, 300));
-            }
-        }
-    }
-
-    if (!prelaunchBlock) {
-        throw new Error(`No Transfer events found after contract deployment for token ${tokenAddress}.`);
-    }
-
-    console.log(`📋 Pre-launch block found: ${prelaunchBlock}`);
-
-    // ─── Phase 3: Find launch block (first event AFTER pre-launch block) ─
-    let forwardFrom = prelaunchBlock + 1;
-    const maxScanEnd = Math.min(prelaunchBlock + 1000000, currentBlock);
-    let forwardChunk = WINDOW;
-
-    console.log(`🔎 Phase 3: Scanning forward from block ${forwardFrom} for launch...`);
-
-    while (forwardFrom <= maxScanEnd) {
-        const scanTo = Math.min(forwardFrom + forwardChunk, maxScanEnd);
-        let retries = 0;
-        let success = false;
-
-        while (!success && retries < MAX_RETRIES) {
-            try {
-                const logs = await client.request({
-                    method: 'eth_getLogs',
-                    params: [{
-                        address: tokenAddress,
-                        fromBlock: `0x${forwardFrom.toString(16)}`,
-                        toBlock: `0x${scanTo.toString(16)}`,
-                        topics: [TRANSFER_TOPIC],
-                    }],
-                });
-
-                if (logs.length > 0) {
-                    const launchBlock = Number(logs[0].blockNumber);
-                    console.log(`🚀 Launch block detected: ${launchBlock} (${launchBlock - prelaunchBlock} blocks after pre-launch)`);
-                    return { launchBlock, prelaunchBlock };
-                }
-
-                forwardFrom = scanTo + 1;
                 success = true;
-                if (forwardChunk < 10000) forwardChunk = Math.min(forwardChunk * 2, 10000);
-
             } catch (err) {
                 retries++;
-                forwardChunk = Math.max(500, Math.floor(forwardChunk / 2));
-                if (retries >= MAX_RETRIES) {
-                    forwardFrom = scanTo + 1;
-                    success = true;
-                }
-                await new Promise(r => setTimeout(r, 500 * retries));
+                console.warn(`⚠️ getLogs error (retry ${retries}/3): ${err.message}`);
+                await new Promise(r => setTimeout(r, 1000 * retries));
             }
         }
     }
 
-    throw new Error(`Could not find launch block for token ${tokenAddress}. The token may not have been launched yet.`);
+    throw new Error(`Could not find launch block for token ${tokenAddress}. The token may not have been launched or traded yet.`);
 }
 
 // ─── Tax Calculation ─────────────────────────────────────────────────────────
