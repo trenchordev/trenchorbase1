@@ -139,7 +139,7 @@ async function validateTokenAddress(tokenAddress) {
     try {
         const client = createPublicClient({
             chain: base,
-            transport: http(RPC_URL, { retryCount: 2, retryDelay: 500 }),
+            transport: http(RPC_URL, { retryCount: 1, retryDelay: 500, timeout: 3000 }),
         });
 
         const code = await client.getCode({ address: tokenAddress });
@@ -174,10 +174,19 @@ async function doPhase2Work(job) {
 
         console.log(`🔬 Calculating tax for: ${tokenAddress}`);
 
-        // Calculate tax
-        const report = await calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
+        // Calculate tax with strict timeout
+        const calcPromise = calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
             console.log(`⏳ Job ${jobId} Progress: ${percent}% - ${message}`);
         });
+
+        // Safe fallback timeout: 55 seconds (Olas timeout is usually 60s)
+        const calcTimeout = new Promise((resolve, reject) => {
+            setTimeout(() => {
+                reject(new Error('Calculation exceeded 55 second strict limit. Generating safe fallback report to prevent Expired Jobs.'));
+            }, 55000);
+        });
+
+        const report = await Promise.race([calcPromise, calcTimeout]);
 
         // Format the report as a deliverable
         const deliverable = formatTaxReport(report);
@@ -269,8 +278,17 @@ async function handleNewTask(job) {
                 return;
             }
 
-            // Validate the token address on-chain
-            const validation = await validateTokenAddress(tokenAddress);
+            // Validate the token address on-chain with a hard 5-second timeout
+            const validationPromise = validateTokenAddress(tokenAddress);
+            const validationTimeout = new Promise(resolve => {
+                setTimeout(() => {
+                    console.warn(`⏱️ Phase 0 validation timeout (5s) exceeded. Assuming valid to prevent Expired Job.`);
+                    resolve({ valid: true });
+                }, 5000);
+            });
+
+            const validation = await Promise.race([validationPromise, validationTimeout]);
+
             if (!validation.valid) {
                 console.log(`🚫 REJECTING: ${validation.reason}`);
                 jobStats.rejected++;

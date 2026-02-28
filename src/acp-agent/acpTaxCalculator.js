@@ -9,7 +9,7 @@
  * If the 2940-block window hasn't elapsed yet, returns partial results.
  */
 
-import { createPublicClient, http, formatEther, fallback } from 'viem';
+import { createPublicClient, http, formatEther, fallback, toHex } from 'viem';
 import { base } from 'viem/chains';
 
 // ─── Constants ───────────────────────────────────────────────────────────────
@@ -158,8 +158,8 @@ export async function findLaunchBlock(tokenAddress, client) {
                     method: 'eth_getLogs',
                     params: [{
                         address: tokenAddress,
-                        fromBlock: `0x${from.toString(16)}`,
-                        toBlock: `0x${to.toString(16)}`,
+                        fromBlock: toHex(from),
+                        toBlock: toHex(to),
                         topics: [TRANSFER_TOPIC],
                     }],
                 });
@@ -226,8 +226,8 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
                     method: 'eth_getLogs',
                     params: [{
                         address: VIRTUAL_ADDRESS,
-                        fromBlock: `0x${currentFrom.toString(16)}`,
-                        toBlock: `0x${currentTo.toString(16)}`,
+                        fromBlock: toHex(currentFrom),
+                        toBlock: toHex(currentTo),
                         topics: [
                             TRANSFER_TOPIC,
                             null, // any sender
