@@ -19,7 +19,7 @@ const TAX_WALLET = '0x32487287c65f11d53bbCa89c2472171eB09bf337';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const BLOCKS_TO_SCAN = 2940;
 const MAX_RETRIES = 10;
-const INITIAL_CHUNK_SIZE = 500;
+const INITIAL_CHUNK_SIZE = 400;
 const RECEIPT_BATCH_SIZE = 5;
 const RECEIPT_BATCH_DELAY_MS = 600;
 
@@ -27,11 +27,12 @@ const RECEIPT_BATCH_DELAY_MS = 600;
 
 function createBaseClient(rpcUrl) {
     const transports = [];
-    if (rpcUrl) transports.push(http(rpcUrl, { retryCount: 2, retryDelay: 1000 }));
+    if (rpcUrl) transports.push(http(rpcUrl, { retryCount: 1, retryDelay: 500, timeout: 5000 }));
 
     // Fallback public RPCs to survive 503 "no backend healthy" errors on Base
-    transports.push(http('https://mainnet.base.org', { retryCount: 3, retryDelay: 1000 }));
-    transports.push(http('https://base.llamarpc.com', { retryCount: 3, retryDelay: 1000 }));
+    // Priority: llamarpc first, because mainnet is currently dropping getLogs connections
+    transports.push(http('https://base.llamarpc.com', { retryCount: 2, retryDelay: 1000, timeout: 8000 }));
+    transports.push(http('https://mainnet.base.org', { retryCount: 1, retryDelay: 500, timeout: 4000 }));
 
     return createPublicClient({
         chain: base,
@@ -240,7 +241,7 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
                 success = true;
 
                 // Increase chunk size on success
-                if (chunkSize < 2000) chunkSize = Math.min(chunkSize * 2, 2000);
+                if (chunkSize < 800) chunkSize = Math.min(chunkSize * 2, 800);
 
                 // Progress update
                 const scanProgress = 10 + Math.round(((currentFrom - launchBlock) / actualBlocksScanned) * 60);
