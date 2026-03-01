@@ -26,8 +26,6 @@ import { calculateTax, formatTaxReport } from './acpTaxCalculator.js';
 import { config } from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
-import { createPublicClient, http } from 'viem';
-import { base } from 'viem/chains';
 
 // ─── Load Environment ────────────────────────────────────────────────────────
 
@@ -117,40 +115,21 @@ function extractTokenAddress(requirement) {
 }
 
 /**
- * Validates a token address to ensure it's a real contract on Base chain.
+ * Validates a token address FORMAT only (no RPC calls).
+ * Phase 0 must never make on-chain calls — they can cause the agent to miss
+ * the ACP acceptance window and get an "Expired Job" penalty.
  * Returns { valid: true } or { valid: false, reason: string }
  */
-async function validateTokenAddress(tokenAddress) {
-    // 1. Basic format check
+function validateTokenAddressFormatSync(tokenAddress) {
     if (!tokenAddress || typeof tokenAddress !== 'string') {
         return { valid: false, reason: 'No token address provided.' };
     }
-
     if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
         return { valid: false, reason: `Invalid token address format: "${tokenAddress}". Must be a 42-character hex string starting with 0x.` };
     }
-
-    // 2. Not a zero/burn address
     if (tokenAddress === '0x0000000000000000000000000000000000000000') {
         return { valid: false, reason: 'Cannot analyze the zero address.' };
     }
-
-    // 3. On-chain contract existence check
-    try {
-        const client = createPublicClient({
-            chain: base,
-            transport: http(RPC_URL, { retryCount: 1, retryDelay: 500, timeout: 3000 }),
-        });
-
-        const code = await client.getCode({ address: tokenAddress });
-        if (!code || code === '0x' || code === '0x0') {
-            return { valid: false, reason: `Address ${tokenAddress} is not a contract on Base chain (no bytecode found). Please provide a valid token contract address.` };
-        }
-    } catch (err) {
-        console.warn(`⚠️ Contract check failed (RPC issue): ${err.message}`);
-        // Don't reject on RPC errors — allow the job to proceed
-    }
-
     return { valid: true };
 }
 
@@ -269,16 +248,10 @@ async function handleNewTask(job) {
                 return;
             }
 
-            // Validate the token address on-chain with a hard 5-second timeout
-            const validationPromise = validateTokenAddress(tokenAddress);
-            const validationTimeout = new Promise(resolve => {
-                setTimeout(() => {
-                    console.warn(`⏱️ Phase 0 validation timeout (5s) exceeded. Assuming valid to prevent Expired Job.`);
-                    resolve({ valid: true });
-                }, 5000);
-            });
-
-            const validation = await Promise.race([validationPromise, validationTimeout]);
+            // Simple format validation only — no on-chain calls in Phase 0.
+            // On-chain checks here caused the 5s acceptance timeout to fire (Expired Jobs).
+            // The token address format check is sufficient to accept/reject at this stage.
+            const validation = validateTokenAddressFormatSync(tokenAddress);
 
             if (!validation.valid) {
                 console.log(`🚫 REJECTING: ${validation.reason}`);
