@@ -33,13 +33,15 @@ const DELAY_BETWEEN_MS = 200;      // rate-limit safety delay (higher = fewer 42
 const DISCOVERY_WINDOW = 300_000;  // scan up to ~7 days after deploy to find launch
 
 // Public Base RPC endpoints — ordered by reliability (most stable first)
+// ALCHEMY_RPC_URL env var goes first when set (paid/high-limit endpoint).
+// All others are free public RPCs used as fallback.
 const BASE_RPCS = [
-    'https://rpc.ankr.com/base',           // Ankr — most stable free endpoint
-    'https://base.llamarpc.com',            // llamarpc
-    'https://base.drpc.org',               // drpc
-    'https://1rpc.io/base',               // 1rpc
-    'https://base-rpc.publicnode.com',     // publicnode
-    'https://mainnet.base.org',            // official (flaky under load)
+    ...(process.env.ALCHEMY_RPC_URL ? [process.env.ALCHEMY_RPC_URL] : []),
+    'https://base.llamarpc.com',
+    'https://base.drpc.org',
+    'https://1rpc.io/base',
+    'https://base-rpc.publicnode.com',
+    'https://mainnet.base.org',
 ];
 
 // ─── Raw RPC caller ─────────────────────────────────────────────────────────
