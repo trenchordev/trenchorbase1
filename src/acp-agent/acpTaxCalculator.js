@@ -19,7 +19,7 @@ const TAX_WALLET = '0x32487287c65f11d53bbCa89c2472171eB09bf337';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const BLOCKS_TO_SCAN = 2940;
 const MAX_RETRIES = 10;
-const INITIAL_CHUNK_SIZE = 400;
+const INITIAL_CHUNK_SIZE = 200;
 const RECEIPT_BATCH_SIZE = 5;
 const RECEIPT_BATCH_DELAY_MS = 600;
 
@@ -27,12 +27,19 @@ const RECEIPT_BATCH_DELAY_MS = 600;
 
 function createBaseClient(rpcUrl) {
     const transports = [];
-    if (rpcUrl) transports.push(http(rpcUrl, { retryCount: 1, retryDelay: 500, timeout: 5000 }));
 
-    // Fallback public RPCs to survive 503 "no backend healthy" errors on Base
-    // Priority: llamarpc first, because mainnet is currently dropping getLogs connections
-    transports.push(http('https://base.llamarpc.com', { retryCount: 2, retryDelay: 1000, timeout: 8000 }));
-    transports.push(http('https://mainnet.base.org', { retryCount: 1, retryDelay: 500, timeout: 4000 }));
+    // High-performance public RPCs first (from OpenClaw implementation)
+    transports.push(http('https://base.llamarpc.com', { retryCount: 1, retryDelay: 500, timeout: 15000 }));
+    transports.push(http('https://base.drpc.org', { retryCount: 1, retryDelay: 500, timeout: 15000 }));
+    transports.push(http('https://1rpc.io/base', { retryCount: 1, retryDelay: 500, timeout: 15000 }));
+
+    // If the provided RPC URL is custom (e.g. Alchemy/Infura), put it at the top
+    if (rpcUrl && !rpcUrl.includes('mainnet.base.org')) {
+        transports.unshift(http(rpcUrl, { retryCount: 1, retryDelay: 500, timeout: 15000 }));
+    } else if (rpcUrl) {
+        // If it's the default congested mainnet node, put it at the very bottom
+        transports.push(http(rpcUrl, { retryCount: 1, retryDelay: 500, timeout: 15000 }));
+    }
 
     return createPublicClient({
         chain: base,
@@ -309,7 +316,7 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
 
                 currentFrom = currentTo + 1;
                 success = true;
-                if (chunkSize < 800) chunkSize = Math.min(chunkSize * 2, 800);
+                if (chunkSize < 500) chunkSize = Math.min(chunkSize * 2, 500);
 
             } catch (err) {
                 retries++;
