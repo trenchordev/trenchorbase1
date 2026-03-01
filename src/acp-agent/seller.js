@@ -26,6 +26,26 @@ import { calculateTax, formatTaxReport } from './acpTaxCalculator.js';
 import { config } from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
+import axios from 'axios';
+
+// ─── Telegram Notifications ───────────────────────────────────────────────
+const TG_TOKEN = process.env.TELEGRAM_BOT_TOKEN;
+const TG_CHAT_ID = process.env.TELEGRAM_CHAT_ID;
+
+/**
+ * Send a Telegram message. Fire-and-forget — never throws.
+ * No-op if TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_ID is not set.
+ */
+async function tgNotify(text) {
+    if (!TG_TOKEN || !TG_CHAT_ID) return;
+    try {
+        await axios.post(
+            `https://api.telegram.org/bot${TG_TOKEN}/sendMessage`,
+            { chat_id: TG_CHAT_ID, text, parse_mode: 'HTML' },
+            { timeout: 5000 }
+        );
+    } catch (_) { /* silently ignore — notifications are best-effort */ }
+}
 
 // ─── Load Environment ────────────────────────────────────────────────────────
 
@@ -142,6 +162,7 @@ function validateTokenAddressFormatSync(tokenAddress) {
 
 async function doPhase2Work(job) {
     const jobId = job.id;
+    const _jobStartTime = Date.now();
     console.log(`🔄 Phase 2: Starting work for Job ${jobId}...`);
 
     try {
@@ -175,13 +196,31 @@ async function doPhase2Work(job) {
         console.log(`✅ Job ${jobId} delivered successfully!`);
         jobStats.delivered++;
         if (result?.txnHash) {
-            console.log(`🧾 Deliver TxHash: ${result.txnHash}`);
+            console.log(`🧧 Deliver TxHash: ${result.txnHash}`);
         }
+
+        // 📲 Telegram: job tamamlandı
+        tgNotify(
+            `✅ <b>Job Tamamlandı!</b>\n` +
+            `🔑 Job ID: <code>${jobId}</code>\n` +
+            `🎯 Token: <code>${tokenAddress}</code>\n` +
+            `💰 Vergi: <b>${report.totalTaxVirtual?.toFixed(4) ?? '?'} VIRTUAL</b>\n` +
+            `📄 TX Sayısı: ${report.validTransactions ?? 0}\n` +
+            `⏱ Süre: ${Math.round((Date.now() - _jobStartTime) / 1000)}s`
+        );
         logQueueStatus();
     } catch (err) {
+        const _elapsed = Math.round((Date.now() - _jobStartTime) / 1000);
         console.error(`❌ Error in Job ${jobId} (Phase 2):`, err.message || err);
         jobStats.failed++;
 
+        // 📲 Telegram: job failed
+        tgNotify(
+            `❌ <b>Job Başarısız!</b>\n` +
+            `🔑 Job ID: <code>${jobId}</code>\n` +
+            `🎯 Token: <code>${tokenAddress}</code>\n` +
+            `📍 Hata: ${err.message?.slice(0, 120)}`
+        );
         // CRITICAL: We MUST deliver something in Phase 2, otherwise the job sits Pending until it expires,
         // which hurts the agent's Graduation metrics. We deliver a fallback error payload.
         try {
@@ -191,7 +230,7 @@ async function doPhase2Work(job) {
                 message: `Failed to perform tax calculation: ${err.message}`,
                 summary: "Error occurred during on-chain scanning. Please try again.",
                 totalTaxVirtual: 0,
-                tokenAddress: "unknown"
+                tokenAddress: tokenAddress // Use the extracted tokenAddress, or "unknown"
             };
             await job.deliver(fallbackDeliverable);
             console.log(`✅ Fallback delivered for Job ${jobId}.`);
@@ -284,8 +323,17 @@ async function handleNewTask(job) {
             const respondResult = await job.respond(true, `Accepted! Will calculate tax for token ${tokenAddress}.`);
             console.log(`✅ Job ${jobId} accepted & requirement sent`);
             if (respondResult?.txnHash) {
-                console.log(`🧾 Respond TxHash: ${respondResult.txnHash}`);
+                console.log(`🧧 Respond TxHash: ${respondResult.txnHash}`);
             }
+
+            // 📲 Telegram: new job accepted
+            tgNotify(
+                `📥 <b>Yeni Job Kabul Edildi</b>\n` +
+                `🔑 Job ID: <code>${jobId}</code>\n` +
+                `🎯 Token: <code>${tokenAddress}</code>\n` +
+                `👤 Client: <code>${job.clientAddress?.slice(0, 10)}...</code>`
+            );
+
             logQueueStatus();
             return; // Wait for Buyer to pay → Phase 2 callback
         }
