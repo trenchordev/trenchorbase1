@@ -1,35 +1,42 @@
 /**
- * ACP Tax Calculator Module — v4 (OpenClaw-compatible)
+ * ACP Tax Calculator Module — v5 (OpenClaw analyzer.ts port)
  *
- * This module mirrors the exact approach used in the working OpenClaw agent
- * (wolfy-agent/virtuals-tax-analyzer). It uses:
- *   1. Raw axios HTTP calls directly to RPC endpoints (no viem client)
- *   2. Multi-endpoint auto-failover with hard per-request timeouts
- *   3. eth_getCode binary search starting from VIRTUALS_FLOOR_BLOCK
- *   4. O(1) in-memory intersection to find taxed buys (no receipt calls)
+ * Uses INTERSECTION-FIRST launch discovery — the ONLY reliable approach for
+ * Virtuals Protocol tokens. Mirrors OpenClaw's analyzer.ts exactly:
  *
- * NO DexScreener. NO viem fallback. NO receipt fetches.
+ *   1. Find deploy block via eth_getCode binary search (O(log N) = ~25 calls)
+ *   2. Scan forward in CHUNK_SIZE (900-block) windows from deploy block.
+ *      In each window, check if VIRTUAL→TAX_ADDRESS and target token Transfers
+ *      share a txHash. This is the ONLY reliable signal of real trading start.
+ *   3. Once the launch block (first intersection) is found, scan [launch, launch+2940]
+ *      to collect all VIRTUAL→TAX_ADDRESS transfers intersecting token buys.
+ *
+ * Why: "first non-mint Transfer" is unreliable. Virtuals tokens have internal
+ * distributions/burns before real bonding-curve trading starts.
+ * The correct signal is VIRTUAL→taxAddress in the same tx as a token transfer.
+ *
+ * NO DexScreener. NO viem. NO receipt fetches. Pure axios.
  */
 
 import axios from 'axios';
-import { formatEther } from 'viem';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
 const VIRTUAL_ADDRESS = '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b';
-const TAX_WALLET = '0x32487287c65f11d53bbca89c2472171eb09bf337';
+const TAX_ADDRESS = '0x32487287c65f11d53bbca89c2472171eb09bf337';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
-const BLOCKS_TO_SCAN = 2940;   // ~98 minutes at 2s/block
-const CHUNK_SIZE = 900;    // max safe eth_getLogs block range per public RPC
-const VIRTUALS_FLOOR = 14_000_000;   // oldest possible Virtuals token on Base
-const RPC_TIMEOUT_MS = 12_000;  // 12s per single RPC call
-const DELAY_BETWEEN_MS = 150;    // 150ms between calls (rate-limit safety)
+const BLOCKS_TO_SCAN = 2940;      // ~98 minutes at 2s/block
+const CHUNK_SIZE = 900;       // max safe eth_getLogs per public RPC
+const VIRTUALS_FLOOR = 14_000_000; // oldest possible Virtuals token on Base
+const RPC_TIMEOUT_MS = 12_000;   // per-call timeout
+const DELAY_BETWEEN_MS = 150;      // rate-limit safety delay
+const DISCOVERY_WINDOW = 400_000;  // scan up to ~9 days after deploy to find launch
 
-// Public Base RPC endpoints — same list as OpenClaw, ordered by reliability
+// Public Base RPC endpoints — ordered by reliability
 const BASE_RPCS = [
+    'https://mainnet.base.org',
     'https://base.llamarpc.com',
     'https://base.drpc.org',
-    'https://mainnet.base.org',
     'https://1rpc.io/base',
     'https://base-rpc.publicnode.com',
 ];
@@ -40,15 +47,11 @@ let _rpcIndex = 0;
 let _lastCall = 0;
 
 async function rpcCall(method, params) {
-    // Throttle: at least DELAY_BETWEEN_MS between calls
     const now = Date.now();
     const elapsed = now - _lastCall;
-    if (elapsed < DELAY_BETWEEN_MS) {
-        await sleep(DELAY_BETWEEN_MS - elapsed);
-    }
+    if (elapsed < DELAY_BETWEEN_MS) await sleep(DELAY_BETWEEN_MS - elapsed);
     _lastCall = Date.now();
 
-    // Try each endpoint in order (round-robin on failure)
     for (let attempt = 0; attempt < BASE_RPCS.length; attempt++) {
         const url = BASE_RPCS[_rpcIndex % BASE_RPCS.length];
         try {
@@ -58,14 +61,12 @@ async function rpcCall(method, params) {
                 { timeout: RPC_TIMEOUT_MS }
             );
             if (data.error) {
-                // Failover on RPC-level errors that are endpoint-specific
                 const code = data.error?.code ?? 0;
                 const msg = String(data.error?.message ?? '');
                 const isEndpointQuirk =
                     code === -32001 || code === -32603 ||
                     msg.includes('incorrect response') ||
                     msg.includes('wrong json-rpc');
-
                 if (isEndpointQuirk && attempt < BASE_RPCS.length - 1) {
                     _rpcIndex++;
                     await sleep(300);
@@ -76,12 +77,11 @@ async function rpcCall(method, params) {
             return data.result;
         } catch (err) {
             const status = err?.response?.status;
-            const axiosOk = [400, 408, 429, 500, 502, 503, 504].includes(status);
+            const axiosOk = [400, 408, 413, 429, 500, 502, 503, 504].includes(status);
             const netErr = ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT'].includes(err?.code ?? '');
             const timeout = err?.message?.includes('timeout');
-
             if ((axiosOk || netErr || timeout) && attempt < BASE_RPCS.length - 1) {
-                console.warn(`   ⚠️ RPC[${url}] failed (${err.message?.slice(0, 60)}), trying next...`);
+                console.warn(`   ⚠️ RPC[${url}] failed (${err.message?.slice(0, 50)}), trying next...`);
                 _rpcIndex++;
                 await sleep(300);
                 continue;
@@ -94,44 +94,49 @@ async function rpcCall(method, params) {
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-// ─── eth_getLogs chunked fetcher ─────────────────────────────────────────────
+// ─── eth_getLogs helpers ─────────────────────────────────────────────────────
 
 /**
- * Fetches Transfer logs for a contract in [fromBlock, toBlock] using CHUNK_SIZE windows.
- * Optionally filters by "to" address (topic[2]).
+ * Fetch one chunk of Transfer logs.
+ * toAddressFilter: if set, filters by topic[2] (recipient address).
+ * Uses `null` (not `[]`) for wildcard — drpc.org returns HTTP 500 for `[]`.
  */
-async function fetchLogs(contractAddress, fromBlock, toBlock, toAddressFilter, onProgress) {
+async function getLogsChunk(contractAddress, fromBlock, toBlock, toAddressFilter) {
+    let topics;
+    if (toAddressFilter) {
+        const padded = '0x000000000000000000000000' + toAddressFilter.slice(2).toLowerCase();
+        topics = [TRANSFER_TOPIC, null, padded];
+    } else {
+        topics = [TRANSFER_TOPIC];
+    }
+    return rpcCall('eth_getLogs', [{
+        address: contractAddress,
+        fromBlock: '0x' + fromBlock.toString(16),
+        toBlock: '0x' + toBlock.toString(16),
+        topics,
+    }]);
+}
+
+/**
+ * Fetch all Transfer logs in [fromBlock, toBlock] in CHUNK_SIZE windows.
+ * Retries with half-chunk on block-range errors.
+ */
+async function fetchLogs(contractAddress, fromBlock, toBlock, toAddressFilter) {
     const all = [];
     let chunk = CHUNK_SIZE;
 
     for (let from = fromBlock; from <= toBlock; from += chunk + 1) {
         const to = Math.min(from + chunk, toBlock);
-
-        // Build topics: avoid null (some RPCs reject it) — use array filter instead
-        let topics;
-        if (toAddressFilter) {
-            const padded = '0x000000000000000000000000' + toAddressFilter.slice(2).toLowerCase();
-            topics = [TRANSFER_TOPIC, [], padded];
-        } else {
-            topics = [TRANSFER_TOPIC];
-        }
-
         let retries = 0;
-        while (retries <= 3) {
+        while (true) {
             try {
-                const logs = await rpcCall('eth_getLogs', [{
-                    address: contractAddress,
-                    fromBlock: '0x' + from.toString(16),
-                    toBlock: '0x' + to.toString(16),
-                    topics,
-                }]);
+                const logs = await getLogsChunk(contractAddress, from, to, toAddressFilter);
                 if (logs) all.push(...logs);
-                onProgress?.(`   ${from.toLocaleString()} → ${to.toLocaleString()}`);
                 break;
             } catch (err) {
                 retries++;
-                console.warn(`   ⚠️ getLogs retry ${retries}/3 [${from}-${to}]: ${err.message?.slice(0, 80)}`);
-                if (retries > 3) break;   // skip chunk on persistent failure
+                console.warn(`   ⚠️ getLogs retry ${retries}/3 [${from}-${to}]: ${err.message?.slice(0, 60)}`);
+                if (retries >= 3) break;
                 chunk = Math.max(100, Math.floor(chunk / 2));
                 await sleep(1000 * retries);
             }
@@ -140,180 +145,181 @@ async function fetchLogs(contractAddress, fromBlock, toBlock, toAddressFilter, o
     return all;
 }
 
-// ─── Launch Block Detection ───────────────────────────────────────────────────
+// ─── Deploy Block Detection ───────────────────────────────────────────────────
 
 /**
- * Finds deploy block via eth_getCode binary search.
- * Mirrors OpenClaw basescan.ts getDeployBlock() exactly.
- * Returns deploy block number.
+ * Binary search for the first block where the contract code exists.
+ * O(log N) = ~25 RPC calls, handles any token age.
  */
 async function getDeployBlock(tokenAddress, currentBlock) {
-    // Verify contract exists at latest block first
     const codeNow = await rpcCall('eth_getCode', [tokenAddress, 'latest']);
     if (!codeNow || codeNow === '0x') {
         throw new Error(`${tokenAddress} is not a contract on Base chain.`);
     }
-
     let lo = VIRTUALS_FLOOR;
     let hi = currentBlock;
-
     while (lo < hi) {
         const mid = Math.floor((lo + hi) / 2);
         try {
             const code = await rpcCall('eth_getCode', [tokenAddress, '0x' + mid.toString(16)]);
-            if (!code || code === '0x') {
-                lo = mid + 1;
-            } else {
-                hi = mid;
-            }
+            if (!code || code === '0x') { lo = mid + 1; } else { hi = mid; }
         } catch (err) {
-            console.warn(`   ⚠️ getCode error at ${mid}: ${err.message?.slice(0, 60)}`);
+            console.warn(`   ⚠️ getCode error at ${mid}: ${err.message?.slice(0, 50)}`);
             await sleep(1000);
-            // do NOT advance lo/hi on network error — retry same mid
         }
     }
     return lo;
 }
 
+// ─── Intersection-First Launch Discovery ──────────────────────────────────────
+
 /**
- * Finds the actual launch block (first real trading Transfer).
- * Scans forward from deploy block in CHUNK_SIZE windows looking for first Transfer.
- * Mirrors OpenClaw's approach.
+ * Finds the real launch block (first block where a VIRTUAL→TAX_ADDRESS transfer
+ * and a target token Transfer share the same txHash).
+ *
+ * This is the ONLY reliable method for Virtuals Protocol tokens:
+ * - New model: launch happens immediately at deploy
+ * - Old model: launch is days/weeks after deploy (prebonding phase)
+ * VIRTUAL→taxAddress only flows during bonding-curve buys — so the first
+ * intersection IS the true launch block.
+ *
+ * Scans forward in CHUNK_SIZE steps from deploy block.
+ * Falls back to deploy block if no intersection found in DISCOVERY_WINDOW blocks.
  */
 async function findLaunchBlock(tokenAddress, deployBlock, currentBlock) {
-    console.log(`📋 Scanning forward from deploy block ${deployBlock} for first Transfer...`);
+    console.log(`📋 Finding launch block via VIRTUAL-tax intersection...`);
+    const ZERO = '0x0000000000000000000000000000000000000000000000000000000000000000';
 
-    for (let from = deployBlock; from <= Math.min(deployBlock + 300_000, currentBlock); from += CHUNK_SIZE + 1) {
-        const to = Math.min(from + CHUNK_SIZE, currentBlock);
-        try {
-            const logs = await rpcCall('eth_getLogs', [{
-                address: tokenAddress,
-                fromBlock: '0x' + from.toString(16),
-                toBlock: '0x' + to.toString(16),
-                topics: [TRANSFER_TOPIC],
-            }]);
-            if (logs && logs.length > 0) {
-                const firstBlock = parseInt(logs[0].blockNumber, 16);
-                console.log(`✅ First Transfer at block ${firstBlock.toLocaleString()}`);
-                return firstBlock;
-            }
-        } catch (err) {
-            console.warn(`   ⚠️ getLogs error searching for launch [${from}-${to}]: ${err.message?.slice(0, 60)}`);
-            await sleep(500);
+    const scanEnd = Math.min(deployBlock + DISCOVERY_WINDOW, currentBlock);
+
+    for (let from = deployBlock; from <= scanEnd; from += CHUNK_SIZE + 1) {
+        const to = Math.min(from + CHUNK_SIZE, scanEnd);
+
+        const [tokenLogs, taxLogs] = await Promise.all([
+            getLogsChunk(tokenAddress, from, to, null).catch(() => []),
+            getLogsChunk(VIRTUAL_ADDRESS, from, to, TAX_ADDRESS).catch(() => []),
+        ]);
+
+        if (!tokenLogs?.length || !taxLogs?.length) continue;
+
+        // Build txHash set from VIRTUAL tax transfers
+        const taxTxSet = new Set(taxLogs.map(l => l.transactionHash.toLowerCase()));
+
+        // Find token transfers in the same txs (skip mints)
+        const matches = tokenLogs.filter(l =>
+            l.topics[1]?.toLowerCase() !== ZERO &&
+            taxTxSet.has(l.transactionHash.toLowerCase())
+        );
+
+        if (matches.length > 0) {
+            matches.sort((a, b) => parseInt(a.blockNumber, 16) - parseInt(b.blockNumber, 16));
+            const launchBlock = parseInt(matches[0].blockNumber, 16);
+            console.log(`✅ Launch block: ${launchBlock.toLocaleString()} (${launchBlock - deployBlock} blocks after deploy)`);
+            return launchBlock;
         }
     }
 
-    // Fallback: use deploy block itself
-    console.warn(`⚠️ No transfers found within 300k blocks of deploy. Using deploy block.`);
-    return deployBlock;
+    console.warn(`⚠️ No intersection found in ${DISCOVERY_WINDOW.toLocaleString()} blocks. This token may have 0 tax.`);
+    return -1; // Signals: no taxed buys found
 }
 
 // ─── Main Tax Calculator ──────────────────────────────────────────────────────
 
 /**
- * Calculates total VIRTUAL tax collected for a token.
- * Uses OpenClaw's O(1) in-memory intersection algorithm.
+ * Calculates total VIRTUAL tax collected for a Virtuals token.
+ * Mirrors OpenClaw's analyzer.ts v3 exactly.
  *
  * @param {string} tokenAddress - Token contract address
- * @param {string} [rpcUrl] - Optional preferred RPC URL (ignored if it's mainnet.base.org)
- * @param {function} [onProgress] - Optional progress callback (percent, message)
+ * @param {string|null} rpcUrl - Optional preferred RPC URL (prepended to failover list)
+ * @param {function} onProgress - Progress callback (percent, message)
  * @returns {Promise<TaxReport>}
  */
 export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
-    // If a custom (non-default) RPC was provided, prepend it to our list
     if (rpcUrl && !rpcUrl.includes('mainnet.base.org') && !BASE_RPCS.includes(rpcUrl)) {
         BASE_RPCS.unshift(rpcUrl);
     }
 
     const progress = (pct, msg) => { onProgress?.(pct, msg); console.log(`[${pct}%] ${msg}`); };
+    const normToken = tokenAddress.toLowerCase();
 
-    progress(5, 'Getting current block number...');
+    // ── Step 1: Current block + deploy block ─────────────────────────────────
+    progress(5, 'Getting current block...');
     const currentBlockHex = await rpcCall('eth_blockNumber', []);
     const currentBlock = parseInt(currentBlockHex, 16);
     console.log(`📦 Current block: ${currentBlock.toLocaleString()}`);
 
     progress(10, 'Finding contract deploy block via binary search...');
-    const deployBlock = await getDeployBlock(tokenAddress.toLowerCase(), currentBlock);
-    console.log(`📦 Contract deployed at block: ${deployBlock.toLocaleString()}`);
+    const deployBlock = await getDeployBlock(normToken, currentBlock);
+    console.log(`📦 Deploy block: ${deployBlock.toLocaleString()}`);
 
-    progress(20, 'Locating first trading Transfer event...');
-    const launchBlock = await findLaunchBlock(tokenAddress.toLowerCase(), deployBlock, currentBlock);
+    // ── Step 2: Find launch block via intersection discovery ─────────────────
+    progress(20, 'Finding launch block (intersection-first discovery)...');
+    const launchBlock = await findLaunchBlock(normToken, deployBlock, currentBlock);
+
+    if (launchBlock < 0) {
+        // Token has never had a taxed buy in its lifecycle
+        progress(100, 'No taxed buys detected.');
+        return buildEmptyReport(tokenAddress, deployBlock, deployBlock + BLOCKS_TO_SCAN);
+    }
+
     const endBlock = Math.min(launchBlock + BLOCKS_TO_SCAN, currentBlock);
-
-    const actualBlocksScanned = endBlock - launchBlock;
+    const blocksScanned = endBlock - launchBlock;
     const isComplete = (launchBlock + BLOCKS_TO_SCAN) <= currentBlock;
-    const progressPercent = Math.min(100, Math.round((actualBlocksScanned / BLOCKS_TO_SCAN) * 100));
+    const progressPercent = Math.min(100, Math.round((blocksScanned / BLOCKS_TO_SCAN) * 100));
 
-    console.log(`📊 Scan range: ${launchBlock.toLocaleString()} → ${endBlock.toLocaleString()} (${actualBlocksScanned} of ${BLOCKS_TO_SCAN} blocks)`);
-    console.log(`   Complete: ${isComplete ? 'YES ✅' : `NO ⏳ (${progressPercent}%)`}`);
+    console.log(`📊 Tax window: ${launchBlock.toLocaleString()} → ${endBlock.toLocaleString()}`);
+    console.log(`   ${blocksScanned}/${BLOCKS_TO_SCAN} blocks (${progressPercent}%) | Complete: ${isComplete}`);
 
-    // ── Step A: Fetch VIRTUAL → taxWallet transfers in scan window ─────────
-    progress(30, `Fetching VIRTUAL tax transfers (blocks ${launchBlock}–${endBlock})...`);
-    const taxLogs = await fetchLogs(
-        VIRTUAL_ADDRESS,
-        launchBlock,
-        endBlock,
-        TAX_WALLET   // filter: only transfers TO taxWallet
-    );
-    console.log(`📝 Found ${taxLogs.length} VIRTUAL→taxWallet transfers`);
+    // ── Step 3: Fetch all token TXs in the window → build txHash→buyer map ──
+    progress(40, `Fetching ${normToken.slice(0, 10)}... Transfer events in tax window...`);
+    const tokenLogs = await fetchLogs(normToken, launchBlock, endBlock, null);
+    console.log(`📝 Token transfers: ${tokenLogs.length}`);
 
-    // ── Step B: Fetch target token Transfer logs to build txHash Set ───────
-    progress(60, `Fetching ${tokenAddress.slice(0, 10)}... Transfer events...`);
-    const tokenLogs = await fetchLogs(tokenAddress.toLowerCase(), launchBlock, endBlock);
-    console.log(`📝 Found ${tokenLogs.length} target token Transfers`);
-
-    // Build txHash → buyerAddress Map from token logs (OpenClaw style)
-    const tokenTxMap = new Map();
+    const ZERO_ADDR = '0x0000000000000000000000000000000000000000';
+    const txToMap = new Map(); // txHash → buyer address
     for (const log of tokenLogs) {
         const txHash = log.transactionHash.toLowerCase();
-        // topic[2] = 'to' address (the buyer in a buy transfer)
-        const toAddr = log.topics[2]
-            ? '0x' + log.topics[2].slice(26).toLowerCase()
-            : '0xunknown';
-        // Skip mint events (from = zero address)
         const fromAddr = log.topics[1] ? '0x' + log.topics[1].slice(26).toLowerCase() : '';
-        const ZERO = '0x0000000000000000000000000000000000000000';
-        if (fromAddr !== ZERO) {
-            tokenTxMap.set(txHash, toAddr);
+        const toAddr = log.topics[2] ? '0x' + log.topics[2].slice(26).toLowerCase() : '';
+        // Skip mints and transfers TO tax receiver
+        if (fromAddr !== ZERO_ADDR && toAddr !== TAX_ADDRESS.toLowerCase()) {
+            txToMap.set(txHash, toAddr);
         }
     }
 
-    // ── Step C: O(1) memory intersection ───────────────────────────────────
-    progress(80, 'Cross-referencing in memory...');
+    // ── Step 4: Fetch VIRTUAL→TAX_ADDRESS transfers ──────────────────────────
+    progress(65, 'Fetching VIRTUAL tax transfers in tax window...');
+    const taxLogs = await fetchLogs(VIRTUAL_ADDRESS, launchBlock, endBlock, TAX_ADDRESS);
+    console.log(`📝 VIRTUAL tax transfers: ${taxLogs.length}`);
 
-    const userTaxPaid = new Map();
+    // ── Step 5: O(1) memory intersection ─────────────────────────────────────
+    progress(85, 'Cross-referencing in memory...');
+
+    const userTaxPaid = new Map(); // buyer → total VIRTUAL wei
     let totalTax = 0n;
     let validCount = 0;
-    let skippedCount = 0;
 
     for (const log of taxLogs) {
         const txHash = log.transactionHash.toLowerCase();
         const taxAmtWei = BigInt(log.data || '0');
 
-        if (tokenTxMap.has(txHash)) {
-            // topic[1] of the VIRTUAL transfer = 'from' (the payer of the tax)
-            const payer = log.topics[1]
-                ? '0x' + log.topics[1].slice(26).toLowerCase()
-                : '0xunknown';
-
-            const prev = userTaxPaid.get(payer) || 0n;
-            userTaxPaid.set(payer, prev + taxAmtWei);
+        if (txToMap.has(txHash)) {
+            const buyer = txToMap.get(txHash);
+            const prev = userTaxPaid.get(buyer) || 0n;
+            userTaxPaid.set(buyer, prev + taxAmtWei);
             totalTax += taxAmtWei;
             validCount++;
-        } else {
-            skippedCount++;
         }
     }
 
+    // ── Step 6: Build report ──────────────────────────────────────────────────
     progress(95, 'Building report...');
 
-    const totalTaxVirtual = parseFloat(formatEther(totalTax));
-
+    const totalTaxVirtual = Number(totalTax) / 1e18;
     const leaderboard = Array.from(userTaxPaid.entries())
         .map(([address, amt]) => ({
             address,
-            taxPaidWei: amt.toString(),
-            taxPaidVirtual: parseFloat(formatEther(amt)),
+            taxPaidVirtual: Number(amt) / 1e18,
         }))
         .sort((a, b) => b.taxPaidVirtual - a.taxPaidVirtual);
 
@@ -321,32 +327,55 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
 
     const report = {
         tokenAddress,
-        taxWallet: TAX_WALLET,
+        taxWallet: TAX_ADDRESS,
         launchBlock,
+        deployBlock,
         scanStartBlock: launchBlock,
         scanEndBlock: endBlock,
-        blocksScanned: actualBlocksScanned,
+        blocksScanned,
         totalBlocks: BLOCKS_TO_SCAN,
         progressPercent,
         isComplete,
         totalTaxWei: totalTax.toString(),
         totalTaxVirtual,
         validTransactions: validCount,
-        skippedTransactions: skippedCount,
+        skippedTransactions: taxLogs.length - validCount,
         uniquePayers: userTaxPaid.size,
         leaderboard: leaderboard.slice(0, 20),
         timestamp: new Date().toISOString(),
     };
 
     console.log('\n📊 ═══════════════════════════════════════════');
-    console.log(`   Token: ${tokenAddress}`);
-    console.log(`   Launch Block: ${launchBlock.toLocaleString()}`);
-    console.log(`   Blocks Scanned: ${actualBlocksScanned}/${BLOCKS_TO_SCAN} (${progressPercent}%)`);
-    console.log(`   Total Tax: ${totalTaxVirtual} VIRTUAL`);
-    console.log(`   Valid TXs: ${validCount} | Skipped: ${skippedCount}`);
+    console.log(`   Token:  ${tokenAddress}`);
+    console.log(`   Launch: ${launchBlock.toLocaleString()}`);
+    console.log(`   Blocks: ${blocksScanned}/${BLOCKS_TO_SCAN} (${progressPercent}%)`);
+    console.log(`   Tax:    ${totalTaxVirtual.toFixed(4)} VIRTUAL`);
+    console.log(`   Hits:   ${validCount}/${taxLogs.length}`);
     console.log('═══════════════════════════════════════════════\n');
 
     return report;
+}
+
+function buildEmptyReport(tokenAddress, launchBlock, endBlock) {
+    return {
+        tokenAddress,
+        taxWallet: TAX_ADDRESS,
+        launchBlock,
+        deployBlock: launchBlock,
+        scanStartBlock: launchBlock,
+        scanEndBlock: endBlock,
+        blocksScanned: BLOCKS_TO_SCAN,
+        totalBlocks: BLOCKS_TO_SCAN,
+        progressPercent: 100,
+        isComplete: true,
+        totalTaxWei: '0',
+        totalTaxVirtual: 0,
+        validTransactions: 0,
+        skippedTransactions: 0,
+        uniquePayers: 0,
+        leaderboard: [],
+        timestamp: new Date().toISOString(),
+    };
 }
 
 /**
@@ -354,28 +383,27 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
  */
 export function formatTaxReport(report) {
     const lines = [
-        `📊 Tax Report for Token ${report.tokenAddress}`,
+        `📊 Tax Report — ${report.tokenAddress}`,
         ``,
-        `🏷️ Tax Wallet: ${report.taxWallet}`,
-        `🚀 Launch Block: ${report.launchBlock}`,
+        `🏷️  Tax Wallet: ${report.taxWallet}`,
+        `🚀 Launch Block: ${report.launchBlock.toLocaleString()}`,
         `📦 Blocks Scanned: ${report.blocksScanned} / ${report.totalBlocks} (${report.progressPercent}%)`,
-        `${report.isComplete ? '✅ Scan Complete' : '⏳ Scan In Progress (token still in tax period)'}`,
+        `${report.isComplete ? '✅ Tax period complete' : '⏳ Token still in tax period'}`,
         ``,
         `💰 Total Tax Collected: ${report.totalTaxVirtual.toFixed(6)} VIRTUAL`,
-        `📝 Valid Tax Transactions: ${report.validTransactions}`,
+        `📝 Tax Transactions: ${report.validTransactions}`,
         `👥 Unique Tax Payers: ${report.uniquePayers}`,
         ``,
     ];
 
     if (report.leaderboard.length > 0) {
         lines.push(`🏆 Top Tax Payers:`);
-        report.leaderboard.slice(0, 10).forEach((payer, i) => {
-            lines.push(`   ${i + 1}. ${payer.address}: ${payer.taxPaidVirtual.toFixed(6)} VIRTUAL`);
+        report.leaderboard.slice(0, 10).forEach((p, i) => {
+            lines.push(`   ${i + 1}. ${p.address}: ${p.taxPaidVirtual.toFixed(4)} VIRTUAL`);
         });
+        lines.push(``);
     }
 
-    lines.push(``);
-    lines.push(`⏰ Report Generated: ${report.timestamp}`);
-
+    lines.push(`⏰ Generated: ${report.timestamp}`);
     return lines.join('\n');
 }
