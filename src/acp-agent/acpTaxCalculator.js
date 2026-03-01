@@ -92,7 +92,10 @@ export async function findLaunchBlock(tokenAddress, client) {
     // Eliminates the need for 100s of RPC calls if the token is already trading
     try {
         console.log(`🌐 Checking DexScreener for token launch...`);
-        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`);
+        const res = await fetch(`https://api.dexscreener.com/latest/dex/tokens/${tokenAddress}`, {
+            signal: AbortSignal.timeout(5000),
+            headers: { 'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64)' }
+        });
         if (!res.ok) throw new Error(`HTTP ${res.status}`);
         const data = await res.json();
 
@@ -122,31 +125,38 @@ export async function findLaunchBlock(tokenAddress, client) {
     // ─── Fallback Path: On-chain Binary Search ───────────────────────────────
     const currentBlock = Number(await client.getBlockNumber());
     const WINDOW = 2000;
+    const VIRTUALS_FLOOR_BLOCK = 14_000_000;
 
     console.log(`🔎 Phase 1: Finding contract deployment block via binary search...`);
-    let lo = 0;
-    let hi = currentBlock;
-    let deployBlock = currentBlock;
 
-    while (lo <= hi) {
+    // Check if contract exists NOW to prevent infinite loop on empty addresses
+    try {
+        const codeNow = await fetchWithRetry(client, 'eth_getCode', [tokenAddress, 'latest']);
+        if (!codeNow || codeNow === '0x' || codeNow === '0x0') {
+            console.warn(`⚠️ The address ${tokenAddress} is not a valid contract on Base.`);
+            return { launchBlock: currentBlock, prelaunchBlock: currentBlock };
+        }
+    } catch (err) { }
+
+    let lo = VIRTUALS_FLOOR_BLOCK;
+    let hi = currentBlock;
+
+    while (lo < hi) {
         const mid = Math.floor((lo + hi) / 2);
         try {
-            const code = await client.request({
-                method: 'eth_getCode',
-                params: [tokenAddress, `0x${mid.toString(16)}`],
-            });
-            if (code && code !== '0x' && code !== '0x0') {
-                deployBlock = mid;
-                hi = mid - 1;
+            const code = await fetchWithRetry(client, 'eth_getCode', [tokenAddress, `0x${mid.toString(16)}`], 3);
+            if (!code || code === '0x' || code === '0x0') {
+                lo = mid + 1; // Not deployed yet
             } else {
-                lo = mid + 1;
+                hi = mid;     // Deployed at or before mid
             }
         } catch (err) {
-            console.warn(`   ⚠️ getCode error at block ${mid}: ${err.message}`);
-            await new Promise(r => setTimeout(r, 500));
-            lo = mid + 1;
+            console.warn(`   ⚠️ getCode error at block ${mid}: ${err.message}. Retrying...`);
+            await new Promise(r => setTimeout(r, 1000));
+            // Do NOT modify lo/hi on network error, let it retry the same mid
         }
     }
+    const deployBlock = lo;
     console.log(`📦 Contract deployment block: ${deployBlock}`);
 
     // Phase 2: Scan forward to find the first event (up to 500k blocks = ~11 days post-deployment)
