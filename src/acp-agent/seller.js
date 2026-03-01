@@ -174,19 +174,10 @@ async function doPhase2Work(job) {
 
         console.log(`🔬 Calculating tax for: ${tokenAddress}`);
 
-        // Calculate tax with strict timeout
-        const calcPromise = calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
+        // Calculate tax natively (new O(1) algorithm is lightning fast, no timeout wrapper needed)
+        const report = await calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
             console.log(`⏳ Job ${jobId} Progress: ${percent}% - ${message}`);
         });
-
-        // Safe fallback timeout: 55 seconds (Olas timeout is usually 60s)
-        const calcTimeout = new Promise((resolve, reject) => {
-            setTimeout(() => {
-                reject(new Error('Calculation exceeded 55 second strict limit. Generating safe fallback report to prevent Expired Jobs.'));
-            }, 55000);
-        });
-
-        const report = await Promise.race([calcPromise, calcTimeout]);
 
         // Format the report as a deliverable
         const deliverable = formatTaxReport(report);
