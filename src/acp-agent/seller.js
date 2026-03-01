@@ -59,11 +59,16 @@ if (!AGENT_PRIVATE_KEY || !AGENT_WALLET || !ENTITY_ID) {
 // We separate quick Phase 0 responses from heavy Phase 2 calculations to prevent
 // Phase 0 timeouts (which cause the agent to get "Expired" jobs).
 
-const MAX_CONCURRENT_CALCS = 3;
+const MAX_CONCURRENT_CALCS = 2;  // Reduced: fewer concurrent = fewer RPC collisions
 const MAX_QUEUE_SIZE = 5; // allow up to 5 jobs in queue waiting for calc
 let activeCalculations = 0;
 const calculationQueue = [];
 let jobStats = { accepted: 0, rejected: 0, delivered: 0, failed: 0 };
+
+// ─── Dedup Guard ─────────────────────────────────────────────────────────────
+// ACP SDK fires the same event multiple times. Track which job+phase combos we
+// have already started acting on to prevent duplicate processing.
+const processingJobs = new Set(); // Set<`${jobId}-${phase}`>
 
 function logQueueStatus() {
     console.log(`📊 Capacity: ${activeCalculations}/${MAX_CONCURRENT_CALCS} active calc, ${calculationQueue.length}/${MAX_QUEUE_SIZE} queued | Stats: ✅${jobStats.delivered} 🚫${jobStats.rejected} ❌${jobStats.failed}`);
@@ -205,6 +210,16 @@ async function doPhase2Work(job) {
 async function handleNewTask(job) {
     const jobId = job.id;
     const phase = job.phase;
+    const dedupKey = `${jobId}-${phase}`;
+
+    // ─ Dedup: ACP SDK fires the same event multiple times. Drop duplicates. ─
+    if (processingJobs.has(dedupKey)) {
+        console.log(`⏭️  Duplicate event skipped: Job ${jobId} Phase ${phase}`);
+        return;
+    }
+    processingJobs.add(dedupKey);
+    // Auto-cleanup after 10 minutes so memory doesn't grow unbounded
+    setTimeout(() => processingJobs.delete(dedupKey), 10 * 60 * 1000);
 
     console.log(`\n${'═'.repeat(60)}`);
     console.log(`📥 Job Event — ID: ${jobId} | Phase: ${phase}`);

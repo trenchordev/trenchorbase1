@@ -29,16 +29,17 @@ const BLOCKS_TO_SCAN = 2940;      // ~98 minutes at 2s/block
 const CHUNK_SIZE = 900;       // max safe eth_getLogs per public RPC
 const VIRTUALS_FLOOR = 14_000_000; // oldest possible Virtuals token on Base
 const RPC_TIMEOUT_MS = 12_000;   // per-call timeout
-const DELAY_BETWEEN_MS = 150;      // rate-limit safety delay
-const DISCOVERY_WINDOW = 400_000;  // scan up to ~9 days after deploy to find launch
+const DELAY_BETWEEN_MS = 200;      // rate-limit safety delay (higher = fewer 429s under concurrent load)
+const DISCOVERY_WINDOW = 300_000;  // scan up to ~7 days after deploy to find launch
 
-// Public Base RPC endpoints — ordered by reliability
+// Public Base RPC endpoints — ordered by reliability (most stable first)
 const BASE_RPCS = [
-    'https://mainnet.base.org',
-    'https://base.llamarpc.com',
-    'https://base.drpc.org',
-    'https://1rpc.io/base',
-    'https://base-rpc.publicnode.com',
+    'https://rpc.ankr.com/base',           // Ankr — most stable free endpoint
+    'https://base.llamarpc.com',            // llamarpc
+    'https://base.drpc.org',               // drpc
+    'https://1rpc.io/base',               // 1rpc
+    'https://base-rpc.publicnode.com',     // publicnode
+    'https://mainnet.base.org',            // official (flaky under load)
 ];
 
 // ─── Raw RPC caller ─────────────────────────────────────────────────────────
