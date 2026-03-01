@@ -268,76 +268,96 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
 
     console.log(`📝 Found ${taxTransferLogs.length} VIRTUAL transfers to tax wallet in scan range`);
 
-    if (onProgress) onProgress(75, `Processing ${taxTransferLogs.length} transactions...`);
+    if (onProgress) onProgress(60, `Fetching target token transfers for intersection matching...`);
 
-    // Step 4: Filter by target token interaction and calculate per-user tax
-    // Process receipts in small batches with delays to avoid RPC rate limits
+    // Step 4: Fetch target token transfers to build a fast-lookup Set of valid transactions
+    // This entirely eliminates the need for thousands of slow eth_getTransactionReceipt calls
+    const targetTokenTxMap = new Map();
+    currentFrom = launchBlock;
+    chunkSize = INITIAL_CHUNK_SIZE;
+
+    while (currentFrom < endBlock) {
+        const currentTo = Math.min(currentFrom + chunkSize, endBlock);
+        let success = false;
+        let retries = 0;
+
+        while (!success && retries < MAX_RETRIES) {
+            try {
+                const logs = await client.request({
+                    method: 'eth_getLogs',
+                    params: [{
+                        address: tokenAddress,
+                        fromBlock: toHex(currentFrom),
+                        toBlock: toHex(currentTo),
+                        topics: [TRANSFER_TOPIC],
+                    }],
+                });
+
+                // Map txHash -> buyer address (the "to" field in a buy transfer is usually the buyer)
+                for (const log of logs) {
+                    const txHash = log.transactionHash.toLowerCase();
+                    // Topic 2 is the 'to' address in a Transfer(from, to, value)
+                    if (log.topics[2]) {
+                        // Extract address from 32-byte padded topic (last 40 chars = 20 bytes)
+                        const toAddress = '0x' + log.topics[2].slice(26).toLowerCase();
+                        targetTokenTxMap.set(txHash, toAddress);
+                    } else {
+                        // Fallback: just record the interaction
+                        targetTokenTxMap.set(txHash, '0xunknown');
+                    }
+                }
+
+                currentFrom = currentTo + 1;
+                success = true;
+                if (chunkSize < 800) chunkSize = Math.min(chunkSize * 2, 800);
+
+            } catch (err) {
+                retries++;
+                console.warn(`⚠️ Error fetching target token logs (retry ${retries}/${MAX_RETRIES}):`, err.message);
+                chunkSize = Math.max(50, Math.floor(chunkSize / 2));
+                if (retries >= MAX_RETRIES) {
+                    currentFrom = currentTo + 1;
+                    success = true;
+                }
+                await new Promise(r => setTimeout(r, 1000 * retries));
+            }
+        }
+    }
+
+    console.log(`📝 Found ${targetTokenTxMap.size} unique transactions involving the target token`);
+    if (onProgress) onProgress(80, `Cross-referencing taxes in memory...`);
+
+    // Step 5: Filter by target token interaction and calculate per-user tax locally
     const userTaxPaid = new Map();
     let validCount = 0;
     let skippedCount = 0;
     let totalTax = 0n;
 
-    for (let batchStart = 0; batchStart < taxTransferLogs.length; batchStart += RECEIPT_BATCH_SIZE) {
-        const batchEnd = Math.min(batchStart + RECEIPT_BATCH_SIZE, taxTransferLogs.length);
-        const batch = taxTransferLogs.slice(batchStart, batchEnd);
+    for (let i = 0; i < taxTransferLogs.length; i++) {
+        const log = taxTransferLogs[i];
+        const txHash = log.transactionHash.toLowerCase();
+        const taxAmount = BigInt(log.data || '0');
 
-        // Process batch sequentially (each with retry)
-        for (let j = 0; j < batch.length; j++) {
-            const i = batchStart + j;
-            const log = batch[j];
-            const txHash = log.transactionHash;
-            const taxAmount = BigInt(log.data || '0');
-
-            try {
-                // Fetch receipt with retry + backoff
-                const receipt = await fetchWithRetry(
-                    client,
-                    'eth_getTransactionReceipt',
-                    [txHash]
-                );
-
-                if (!receipt) {
-                    console.warn(`⚠️ Null receipt for tx ${txHash} — skipping`);
-                    skippedCount++;
-                    continue;
-                }
-
-                const userAddress = receipt.from.toLowerCase();
-
-                // Check if transaction also involves the target token
-                let hasTargetTokenInteraction = false;
-                for (const txLog of receipt.logs) {
-                    if (txLog.topics[0] !== TRANSFER_TOPIC) continue;
-                    if (txLog.address.toLowerCase() === tokenAddress.toLowerCase()) {
-                        hasTargetTokenInteraction = true;
-                        break;
-                    }
-                }
-
-                if (hasTargetTokenInteraction) {
-                    const currentTax = userTaxPaid.get(userAddress) || 0n;
-                    userTaxPaid.set(userAddress, currentTax + taxAmount);
-                    totalTax += taxAmount;
-                    validCount++;
-                } else {
-                    skippedCount++;
-                }
-
-                // Progress update every 10 transactions
-                if (i % 10 === 0 && onProgress) {
-                    const txProgress = 75 + Math.round((i / taxTransferLogs.length) * 20);
-                    onProgress(Math.min(txProgress, 95), `Verified ${i + 1}/${taxTransferLogs.length} transactions...`);
-                }
-
-            } catch (err) {
-                console.warn(`⚠️ Error processing tx ${txHash} (after ${MAX_RETRIES} retries):`, err.message);
-                skippedCount++;
+        // Instant memory intersection check
+        if (targetTokenTxMap.has(txHash)) {
+            // Extract the sender of the VIRTUAL tax. 
+            // In VIRTUAL Transfer(from, to, amount), topic 1 is 'from' (the buyer paying tax)
+            let userAddress = '0xunknown';
+            if (log.topics[1]) {
+                userAddress = '0x' + log.topics[1].slice(26).toLowerCase();
             }
+
+            const currentTax = userTaxPaid.get(userAddress) || 0n;
+            userTaxPaid.set(userAddress, currentTax + taxAmount);
+            totalTax += taxAmount;
+            validCount++;
+        } else {
+            skippedCount++;
         }
 
-        // Inter-batch delay to stay under rate limits
-        if (batchEnd < taxTransferLogs.length) {
-            await new Promise(r => setTimeout(r, RECEIPT_BATCH_DELAY_MS));
+        if (i % 50 === 0 && onProgress) {
+            const txProgress = 80 + Math.round((i / taxTransferLogs.length) * 15);
+            onProgress(Math.min(txProgress, 95), `Verified ${i + 1}/${taxTransferLogs.length} transactions...`);
         }
     }
 
