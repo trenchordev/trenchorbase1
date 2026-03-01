@@ -44,6 +44,9 @@ const BASE_RPCS = [
     'https://mainnet.base.org',
 ];
 
+// Startup log — confirms which RPCs are active (check logs after deploy)
+console.log(`🔌 RPC list (${BASE_RPCS.length} endpoints): ${BASE_RPCS.map((u, i) => `\n   [${i}] ${u}`).join('')}`);
+
 // ─── Raw RPC caller ─────────────────────────────────────────────────────────
 
 let _rpcIndex = 0;
@@ -66,11 +69,19 @@ async function rpcCall(method, params) {
             if (data.error) {
                 const code = data.error?.code ?? 0;
                 const msg = String(data.error?.message ?? '');
+                // Endpoint-specific errors: failover to next RPC instead of throwing.
+                // -32000: block data not available (llamarpc/drpc don't archive all blocks)
+                // -32001: wrong response body (endpoint quirk)
+                // -32002: historical state not available
+                // -32603: internal error
                 const isEndpointQuirk =
-                    code === -32001 || code === -32603 ||
+                    code === -32000 || code === -32001 || code === -32002 || code === -32603 ||
+                    msg.includes('data not available') ||
+                    msg.includes('historical state') ||
                     msg.includes('incorrect response') ||
                     msg.includes('wrong json-rpc');
                 if (isEndpointQuirk && attempt < BASE_RPCS.length - 1) {
+                    console.warn(`   ⚠️ RPC[${url}] quirk (code ${code}), failover...`);
                     _rpcIndex++;
                     await sleep(300);
                     continue;
