@@ -58,8 +58,12 @@ async function rpcCall(method, params) {
     if (elapsed < DELAY_BETWEEN_MS) await sleep(DELAY_BETWEEN_MS - elapsed);
     _lastCall = Date.now();
 
+    // Always start from index 0 (Alchemy if configured, otherwise llamarpc).
+    // _rpcIndex must NOT drift between calls — otherwise Alchemy gets skipped.
+    const startIndex = 0;
+
     for (let attempt = 0; attempt < BASE_RPCS.length; attempt++) {
-        const url = BASE_RPCS[_rpcIndex % BASE_RPCS.length];
+        const url = BASE_RPCS[(startIndex + attempt) % BASE_RPCS.length];
         try {
             const { data } = await axios.post(
                 url,
@@ -82,7 +86,6 @@ async function rpcCall(method, params) {
                     msg.includes('wrong json-rpc');
                 if (isEndpointQuirk && attempt < BASE_RPCS.length - 1) {
                     console.warn(`   ⚠️ RPC[${url}] quirk (code ${code}), failover...`);
-                    _rpcIndex++;
                     await sleep(300);
                     continue;
                 }
@@ -96,7 +99,6 @@ async function rpcCall(method, params) {
             const timeout = err?.message?.includes('timeout');
             if ((axiosOk || netErr || timeout) && attempt < BASE_RPCS.length - 1) {
                 console.warn(`   ⚠️ RPC[${url}] failed (${err.message?.slice(0, 50)}), trying next...`);
-                _rpcIndex++;
                 await sleep(300);
                 continue;
             }
