@@ -52,8 +52,9 @@ console.log(`🔌 RPC list (${BASE_RPCS.length} endpoints): ${BASE_RPCS.map((u, 
 // 400 = permanent config error → blacklisted immediately.
 // Other errors count strikes; after 5 strikes endpoint is temporarily deprioritized.
 const _deadEndpoints = new Set();  // permanently skip (e.g. bad API key)
-const _strikeCount = {};         // url → consecutive failure count
+const _strikeCount = {};           // url → consecutive failure count
 const STRIKE_LIMIT = 5;
+let _lastCall = 0;                 // timestamp of last RPC call (rate-limit throttle)
 
 async function rpcCall(method, params) {
     const now = Date.now();

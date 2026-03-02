@@ -165,11 +165,11 @@ async function doPhase2Work(job) {
     const _jobStartTime = Date.now();
     console.log(`🔄 Phase 2: Starting work for Job ${jobId}...`);
 
-    try {
-        // Extract token address from original requirement
-        const requirement = job.requirement || job.memos?.[0]?.content;
-        const tokenAddress = extractTokenAddress(requirement);
+    // Extract token address BEFORE try so it's available in catch for Telegram notification
+    const requirement = job.requirement || job.memos?.[0]?.content;
+    const tokenAddress = extractTokenAddress(requirement);
 
+    try {
         if (!tokenAddress) {
             console.error(`❌ Cannot extract token address for delivery`);
             jobStats.failed++;
