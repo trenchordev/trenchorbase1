@@ -33,10 +33,11 @@ const DELAY_BETWEEN_MS = 200;      // rate-limit safety delay (higher = fewer 42
 const DISCOVERY_WINDOW = 300_000;  // scan up to ~7 days after deploy to find launch
 
 // Public Base RPC endpoints — ordered by reliability (most stable first)
-// ALCHEMY_RPC_URL env var goes first when set (paid/high-limit endpoint).
+// Supports DRPC_RPC_URL or ALCHEMY_RPC_URL env vars (drpc takes priority).
 // All others are free public RPCs used as fallback.
+const _customRpc = process.env.DRPC_RPC_URL || process.env.ALCHEMY_RPC_URL;
 const BASE_RPCS = [
-    ...(process.env.ALCHEMY_RPC_URL ? [process.env.ALCHEMY_RPC_URL] : []),
+    ...(_customRpc ? [_customRpc] : []),
     'https://base.llamarpc.com',
     'https://base.drpc.org',
     'https://1rpc.io/base',
