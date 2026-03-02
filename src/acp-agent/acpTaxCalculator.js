@@ -47,10 +47,12 @@ const BASE_RPCS = [
 // Startup log — confirms which RPCs are active (check logs after deploy)
 console.log(`🔌 RPC list (${BASE_RPCS.length} endpoints): ${BASE_RPCS.map((u, i) => `\n   [${i}] ${u}`).join('')}`);
 
-// ─── Raw RPC caller ─────────────────────────────────────────────────────────
-
-let _rpcIndex = 0;
-let _lastCall = 0;
+// Session-level endpoint health tracking.
+// 400 = permanent config error → blacklisted immediately.
+// Other errors count strikes; after 5 strikes endpoint is temporarily deprioritized.
+const _deadEndpoints = new Set();  // permanently skip (e.g. bad API key)
+const _strikeCount = {};         // url → consecutive failure count
+const STRIKE_LIMIT = 5;
 
 async function rpcCall(method, params) {
     const now = Date.now();
@@ -58,12 +60,18 @@ async function rpcCall(method, params) {
     if (elapsed < DELAY_BETWEEN_MS) await sleep(DELAY_BETWEEN_MS - elapsed);
     _lastCall = Date.now();
 
-    // Always start from index 0 (Alchemy if configured, otherwise llamarpc).
-    // _rpcIndex must NOT drift between calls — otherwise Alchemy gets skipped.
-    const startIndex = 0;
+    // Build active endpoint list: skip dead ones, try struck ones last
+    const active = BASE_RPCS.filter(u => !_deadEndpoints.has(u));
+    const healthy = active.filter(u => (_strikeCount[u] ?? 0) < STRIKE_LIMIT);
+    const limping = active.filter(u => (_strikeCount[u] ?? 0) >= STRIKE_LIMIT);
+    const ordered = [...healthy, ...limping];
 
-    for (let attempt = 0; attempt < BASE_RPCS.length; attempt++) {
-        const url = BASE_RPCS[(startIndex + attempt) % BASE_RPCS.length];
+    if (ordered.length === 0) {
+        throw new Error('All RPC endpoints are dead or rate-limited. Please check your configuration.');
+    }
+
+    for (let attempt = 0; attempt < ordered.length; attempt++) {
+        const url = ordered[attempt];
         try {
             const { data } = await axios.post(
                 url,
@@ -73,39 +81,47 @@ async function rpcCall(method, params) {
             if (data.error) {
                 const code = data.error?.code ?? 0;
                 const msg = String(data.error?.message ?? '');
-                // Endpoint-specific errors: failover to next RPC instead of throwing.
-                // -32000: block data not available (llamarpc/drpc don't archive all blocks)
-                // -32001: wrong response body (endpoint quirk)
-                // -32002: historical state not available
-                // -32603: internal error
                 const isEndpointQuirk =
                     code === -32000 || code === -32001 || code === -32002 || code === -32603 ||
                     msg.includes('data not available') ||
                     msg.includes('historical state') ||
                     msg.includes('incorrect response') ||
                     msg.includes('wrong json-rpc');
-                if (isEndpointQuirk && attempt < BASE_RPCS.length - 1) {
+                if (isEndpointQuirk && attempt < ordered.length - 1) {
+                    _strikeCount[url] = (_strikeCount[url] ?? 0) + 1;
                     console.warn(`   ⚠️ RPC[${url}] quirk (code ${code}), failover...`);
-                    await sleep(300);
+                    await sleep(200);
                     continue;
                 }
                 throw new Error(`RPC[${url}] error: ${JSON.stringify(data.error)}`);
             }
+            // Success — clear strikes
+            _strikeCount[url] = 0;
             return data.result;
         } catch (err) {
             const status = err?.response?.status;
-            const axiosOk = [400, 408, 413, 429, 500, 502, 503, 504].includes(status);
-            const netErr = ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT'].includes(err?.code ?? '');
-            const timeout = err?.message?.includes('timeout');
-            if ((axiosOk || netErr || timeout) && attempt < BASE_RPCS.length - 1) {
-                console.warn(`   ⚠️ RPC[${url}] failed (${err.message?.slice(0, 50)}), trying next...`);
-                await sleep(300);
+
+            // 400 = Bad Request (wrong URL, invalid API key) — blacklist permanently
+            if (status === 400) {
+                console.warn(`   🚫 RPC[${url}] blacklisted (HTTP 400 — bad API key or wrong URL). Will not retry.`);
+                _deadEndpoints.add(url);
+                continue; // skip to next endpoint
+            }
+
+            const retriable = [408, 413, 429, 500, 502, 503, 504].includes(status) ||
+                ['ECONNREFUSED', 'ECONNRESET', 'ETIMEDOUT'].includes(err?.code ?? '') ||
+                err?.message?.includes('timeout');
+
+            if (retriable && attempt < ordered.length - 1) {
+                _strikeCount[url] = (_strikeCount[url] ?? 0) + 1;
+                console.warn(`   ⚠️ RPC[${url}] failed (${err.message?.slice(0, 45)}), trying next...`);
+                await sleep(200);
                 continue;
             }
             throw err;
         }
     }
-    throw new Error('All public Base RPC endpoints failed.');
+    throw new Error('All active Base RPC endpoints failed.');
 }
 
 function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
