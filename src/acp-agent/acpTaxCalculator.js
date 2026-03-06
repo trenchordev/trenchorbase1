@@ -26,7 +26,8 @@ const VIRTUAL_ADDRESS = '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b';
 const TAX_ADDRESS = '0x32487287c65f11d53bbca89c2472171eb09bf337';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const BLOCKS_TO_SCAN = 2940;      // ~98 minutes at 2s/block
-const CHUNK_SIZE = 900;       // max safe eth_getLogs per public RPC
+const CHUNK_SIZE = 2000;           // blocks per eth_getLogs call (2000 safe for drpc/llamarpc)
+const DISCOVERY_PARALLELISM = 3;   // how many chunks to scan simultaneously during launch discovery
 const VIRTUALS_FLOOR = 14_000_000; // oldest possible Virtuals token on Base
 const RPC_TIMEOUT_MS = 12_000;   // per-call timeout
 const DELAY_BETWEEN_MS = 200;      // rate-limit safety delay (higher = fewer 429s under concurrent load)
@@ -226,35 +227,47 @@ async function findLaunchBlock(tokenAddress, deployBlock, currentBlock) {
 
     const scanEnd = Math.min(deployBlock + DISCOVERY_WINDOW, currentBlock);
 
+    // Build array of all chunk start positions
+    const chunks = [];
     for (let from = deployBlock; from <= scanEnd; from += CHUNK_SIZE + 1) {
-        const to = Math.min(from + CHUNK_SIZE, scanEnd);
+        chunks.push(from);
+    }
 
-        const [tokenLogs, taxLogs] = await Promise.all([
-            getLogsChunk(tokenAddress, from, to, null).catch(() => []),
-            getLogsChunk(VIRTUAL_ADDRESS, from, to, TAX_ADDRESS).catch(() => []),
-        ]);
+    // Process chunks in parallel batches (DISCOVERY_PARALLELISM chunks at a time)
+    for (let i = 0; i < chunks.length; i += DISCOVERY_PARALLELISM) {
+        const batch = chunks.slice(i, i + DISCOVERY_PARALLELISM);
 
-        if (!tokenLogs?.length || !taxLogs?.length) continue;
+        // Fetch all chunks in this batch simultaneously
+        const results = await Promise.all(batch.map(async (from) => {
+            const to = Math.min(from + CHUNK_SIZE, scanEnd);
+            const [tokenLogs, taxLogs] = await Promise.all([
+                getLogsChunk(tokenAddress, from, to, null).catch(() => []),
+                getLogsChunk(VIRTUAL_ADDRESS, from, to, TAX_ADDRESS).catch(() => []),
+            ]);
+            return { from, to, tokenLogs, taxLogs };
+        }));
 
-        // Build txHash set from VIRTUAL tax transfers
-        const taxTxSet = new Set(taxLogs.map(l => l.transactionHash.toLowerCase()));
+        // Check results in chronological order (earliest chunk first)
+        for (const { tokenLogs, taxLogs } of results) {
+            if (!tokenLogs?.length || !taxLogs?.length) continue;
 
-        // Find token transfers in the same txs (skip mints)
-        const matches = tokenLogs.filter(l =>
-            l.topics[1]?.toLowerCase() !== ZERO &&
-            taxTxSet.has(l.transactionHash.toLowerCase())
-        );
+            const taxTxSet = new Set(taxLogs.map(l => l.transactionHash.toLowerCase()));
+            const matches = tokenLogs.filter(l =>
+                l.topics[1]?.toLowerCase() !== ZERO &&
+                taxTxSet.has(l.transactionHash.toLowerCase())
+            );
 
-        if (matches.length > 0) {
-            matches.sort((a, b) => parseInt(a.blockNumber, 16) - parseInt(b.blockNumber, 16));
-            const launchBlock = parseInt(matches[0].blockNumber, 16);
-            console.log(`✅ Launch block: ${launchBlock.toLocaleString()} (${launchBlock - deployBlock} blocks after deploy)`);
-            return launchBlock;
+            if (matches.length > 0) {
+                matches.sort((a, b) => parseInt(a.blockNumber, 16) - parseInt(b.blockNumber, 16));
+                const launchBlock = parseInt(matches[0].blockNumber, 16);
+                console.log(`✅ Launch block: ${launchBlock.toLocaleString()} (${launchBlock - deployBlock} blocks after deploy)`);
+                return launchBlock;
+            }
         }
     }
 
     console.warn(`⚠️ No intersection found in ${DISCOVERY_WINDOW.toLocaleString()} blocks. This token may have 0 tax.`);
-    return -1; // Signals: no taxed buys found
+    return -1;
 }
 
 // ─── Main Tax Calculator ──────────────────────────────────────────────────────
