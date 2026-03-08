@@ -23,6 +23,7 @@ import acpModule from '@virtuals-protocol/acp-node';
 const { AcpContractClientV2, baseAcpConfigV2 } = acpModule;
 const AcpClient = acpModule.default || acpModule;
 import { calculateTax, formatTaxReport } from './acpTaxCalculator.js';
+import { calculateBuybacks, formatBuybackReport } from './acpBuybackTracker.js';
 import { config } from 'dotenv';
 import { resolve, dirname } from 'path';
 import { fileURLToPath } from 'url';
@@ -119,24 +120,28 @@ async function enqueueCalculation(job) {
 // ─── Request Validation ──────────────────────────────────────────────────────
 
 /**
- * Extracts token address from a job's requirement.
- * The requirement can come in different formats:
- * - JSON: { "tokenAddress": "0x..." }
- * - Plain text: "0x2612da14af37933b95a4d8666e7caf9b10ec3edf"
- * - Natural language: "Calculate tax for token 0x2612da..."
+ * Extracts token address and intent from a job's requirement.
  */
-function extractTokenAddress(requirement) {
-    if (!requirement) return null;
+function parseJobRequirement(requirement) {
+    if (!requirement) return { tokenAddress: null, intent: 'tax_scan' };
 
-    // If requirement is an object with tokenAddress field
-    if (typeof requirement === 'object' && requirement.tokenAddress) {
-        return requirement.tokenAddress;
+    let tokenAddress = null;
+    let intent = 'tax_scan';
+    const str = typeof requirement === 'string' ? requirement : JSON.stringify(requirement);
+
+    // Extract token address
+    const match = str.match(/0x[a-fA-F0-9]{40}/);
+    if (match) tokenAddress = match[0];
+
+    // Deduce user Intent (Buyback vs Standard Tax Scan)
+    const lowerStr = str.toLowerCase();
+    const buybackKeywords = ['buyback', 'spend', 'spent', 'remaining', 'trenchor_buyback', 'tax_buyback', 'buyback_tax'];
+
+    if (buybackKeywords.some(kw => lowerStr.includes(kw))) {
+        intent = 'buyback_track';
     }
 
-    // Convert to string and look for an Ethereum address pattern
-    const str = typeof requirement === 'string' ? requirement : JSON.stringify(requirement);
-    const match = str.match(/0x[a-fA-F0-9]{40}/);
-    return match ? match[0] : null;
+    return { tokenAddress, intent };
 }
 
 /**
@@ -167,7 +172,7 @@ async function doPhase2Work(job) {
 
     // Extract token address BEFORE try so it's available in catch for Telegram notification
     const requirement = job.requirement || job.memos?.[0]?.content;
-    const tokenAddress = extractTokenAddress(requirement);
+    const { tokenAddress, intent } = parseJobRequirement(requirement);
 
     try {
         if (!tokenAddress) {
@@ -177,15 +182,38 @@ async function doPhase2Work(job) {
             return;
         }
 
-        console.log(`🔬 Calculating tax for: ${tokenAddress}`);
+        console.log(`🔬 Phase 2 [${intent.toUpperCase()}]: ${tokenAddress}`);
 
-        // Calculate tax natively (new O(1) algorithm is lightning fast, no timeout wrapper needed)
-        const report = await calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
-            console.log(`⏳ Job ${jobId} Progress: ${percent}% - ${message}`);
-        });
+        let report, deliverable, telegramMsg;
 
-        // Format the report as a deliverable
-        const deliverable = formatTaxReport(report);
+        if (intent === 'buyback_track') {
+            report = await calculateBuybacks(tokenAddress, RPC_URL, async (percent, message) => {
+                console.log(`⏳ Job ${jobId} Progress: ${percent}% - ${message}`);
+            });
+            deliverable = formatBuybackReport(report);
+
+            telegramMsg = `✅ <b>Buyback Job Tamamlandı!</b>\n` +
+                `🔑 Job ID: <code>${jobId}</code>\n` +
+                `🎯 Token: <code>${tokenAddress}</code>\n` +
+                `💰 Tax: <b>${report.totalTaxCollectedVirtual?.toFixed(4) ?? '?'} VIRTUAL</b>\n` +
+                `🔥 Spent: <b>${report.totalVirtualSpentVirtual?.toFixed(4) ?? '0'} VIRTUAL</b>\n` +
+                `💵 Pending: <b>${report.pendingVirtualForBuyback?.toFixed(4) ?? '?'} VIRTUAL</b>\n` +
+                `⏱ Süre: ${Math.round((Date.now() - _jobStartTime) / 1000)}s`;
+        } else {
+            // Existing native tax scan feature
+            report = await calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
+                console.log(`⏳ Job ${jobId} Progress: ${percent}% - ${message}`);
+            });
+            deliverable = formatTaxReport(report);
+
+            telegramMsg = `✅ <b>Tax Job Tamamlandı!</b>\n` +
+                `🔑 Job ID: <code>${jobId}</code>\n` +
+                `🎯 Token: <code>${tokenAddress}</code>\n` +
+                `💰 Vergi: <b>${report.totalTaxVirtual?.toFixed(4) ?? '?'} VIRTUAL</b>\n` +
+                `📄 TX Sayısı: ${report.validTransactions ?? 0}\n` +
+                `⏱ Süre: ${Math.round((Date.now() - _jobStartTime) / 1000)}s`;
+        }
+
         console.log(`\n📤 Delivering results for Job ${jobId}...`);
 
         // Brief delay for network settlement
@@ -199,15 +227,8 @@ async function doPhase2Work(job) {
             console.log(`🧧 Deliver TxHash: ${result.txnHash}`);
         }
 
-        // 📲 Telegram: job tamamlandı
-        tgNotify(
-            `✅ <b>Job Tamamlandı!</b>\n` +
-            `🔑 Job ID: <code>${jobId}</code>\n` +
-            `🎯 Token: <code>${tokenAddress}</code>\n` +
-            `💰 Vergi: <b>${report.totalTaxVirtual?.toFixed(4) ?? '?'} VIRTUAL</b>\n` +
-            `📄 TX Sayısı: ${report.validTransactions ?? 0}\n` +
-            `⏱ Süre: ${Math.round((Date.now() - _jobStartTime) / 1000)}s`
-        );
+        // 📲 Telegram Notify
+        tgNotify(telegramMsg);
         logQueueStatus();
     } catch (err) {
         const _elapsed = Math.round((Date.now() - _jobStartTime) / 1000);
@@ -287,13 +308,13 @@ async function handleNewTask(job) {
             if (!requirement || (typeof requirement === 'string' && requirement.trim().length === 0)) {
                 console.log(`🚫 REJECTING: Empty or missing requirement`);
                 jobStats.rejected++;
-                await job.respond(false, 'Request rejected: No requirement provided. Please include a token contract address (0x...) for tax analysis.');
+                await job.respond(false, 'Request rejected: No requirement provided. Please include a token contract address (0x...) for tax or buyback analysis.');
                 logQueueStatus();
                 return;
             }
 
-            // Extract token address
-            const tokenAddress = extractTokenAddress(requirement);
+            // Extract token address and intent
+            const { tokenAddress, intent } = parseJobRequirement(requirement);
             if (!tokenAddress) {
                 console.log(`🚫 REJECTING: No valid token address in requirement`);
                 jobStats.rejected++;
@@ -320,8 +341,8 @@ async function handleNewTask(job) {
 
             // respond(true) = accept() + createRequirement() 
             // This advances the job from REQUEST → NEGOTIATION and signals the Buyer to pay
-            const respondResult = await job.respond(true, `Accepted! Will calculate tax for token ${tokenAddress}.`);
-            console.log(`✅ Job ${jobId} accepted & requirement sent`);
+            const respondResult = await job.respond(true, `Accepted! Preparing ${intent === 'buyback_track' ? 'Buyback Tracker' : 'Tax Scan'} for token ${tokenAddress}.`);
+            console.log(`✅ Job ${jobId} accepted (${intent}) & requirement sent`);
             if (respondResult?.txnHash) {
                 console.log(`🧧 Respond TxHash: ${respondResult.txnHash}`);
             }
