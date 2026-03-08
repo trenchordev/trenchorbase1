@@ -1,6 +1,7 @@
 import './globals.css';
 import Image from 'next/image';
 import LayoutWrapper from '../components/LayoutWrapper';
+import { Web3Provider } from '../components/Web3Provider';
 
 export const metadata = {
     title: 'Trenchor Base',
@@ -54,9 +55,11 @@ export default function RootLayout({ children }) {
                     </div>
                 </div>
 
-                <LayoutWrapper>
-                    {children}
-                </LayoutWrapper>
+                <Web3Provider>
+                    <LayoutWrapper>
+                        {children}
+                    </LayoutWrapper>
+                </Web3Provider>
             </body>
         </html>
     );
