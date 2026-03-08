@@ -5,8 +5,10 @@
   "type": "module",
   "scripts": {
     "dev": "next dev",
-    "build": "echo 'No build step required for Agent'",
+    "build": "next build",
+    "acp-build": "echo 'No build step required for Agent'",
     "start": "node src/acp-agent/seller.js",
+    "vercel-start": "next start",
     "lint": "eslint",
     "acp-agent": "node src/acp-agent/seller.js",
     "acp-test": "node src/acp-agent/test-calculator.js",
