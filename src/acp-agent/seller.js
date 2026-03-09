@@ -205,6 +205,7 @@ async function doPhase2Work(job) {
                 `📄 Adres: <code>${tokenAddress}</code>\n` +
                 `💰 Tax: <b>${report.totalTaxCollectedVirtual?.toFixed(4) ?? '?'} VIRTUAL</b>\n` +
                 `🔥 Spent: <b>${report.totalVirtualSpentVirtual?.toFixed(4) ?? '0'} VIRTUAL</b>\n` +
+                `📈 Got Back: <b>${report.totalTargetTokenReceived?.toLocaleString(undefined, { maximumFractionDigits: 2 }) ?? '0'} ${report.tokenSymbol}</b>\n` +
                 `💵 Pending: <b>${report.pendingVirtualForBuyback?.toFixed(4) ?? '?'} VIRTUAL</b>\n` +
                 `⏱ Süre: ${Math.round((Date.now() - _jobStartTime) / 1000)}s`;
         } else {

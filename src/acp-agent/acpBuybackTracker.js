@@ -27,9 +27,10 @@ const _deadEndpoints = new Set();
 const _strikeCount = {};
 const STRIKE_LIMIT = 5;
 
-// ERC-20 symbol() and name() bare minimum ABI signatures
+// ERC-20 symbol(), name(), and decimals() bare minimum ABI signatures
 const SYMBOL_SIG = '0x95d89b41';
 const NAME_SIG = '0x06fdde03';
+const DECIMALS_SIG = '0x313ce567';
 
 // ─── RPC Engine ─────────────────────────────────────────────────────────────
 
@@ -170,11 +171,14 @@ async function scanTargetTokenToTaxWallet(targetToken, startBlock, endBlock, onP
 
 /**
  * For each found buyback transaction, look at the exact transaction receipt
- * and determine how much VIRTUAL the tax wallet spent.
+ * and determine how much VIRTUAL the tax wallet spent and how much Target Token it received.
  */
-async function calculateVirtualSpentInTxs(txns, onProgress) {
+async function calculateVirtualSpentInTxs(txns, tokenAddress, onProgress) {
     let totalVirtualSpentWei = 0n;
+    let totalTokenReceivedWei = 0n;
     let successfulLookups = 0;
+
+    const targetTokenLower = tokenAddress.toLowerCase();
 
     const totalTxns = txns.length;
 
@@ -190,8 +194,9 @@ async function calculateVirtualSpentInTxs(txns, onProgress) {
 
         for (const receipt of receipts) {
             if (!receipt || !receipt.logs) continue;
+            let foundVirtual = false;
 
-            // Search receipt logs for VIRTUAL Transfer FROM Tax Wallet
+            // Search receipt logs for VIRTUAL Transfer FROM Tax Wallet and Token Transfer TO Tax Wallet
             for (const log of receipt.logs) {
                 if (log.address.toLowerCase() === VIRTUAL_ADDRESS.toLowerCase() &&
                     log.topics[0] === TRANSFER_TOPIC &&
@@ -199,9 +204,18 @@ async function calculateVirtualSpentInTxs(txns, onProgress) {
 
                     const amount = BigInt(log.data || '0');
                     totalVirtualSpentWei += amount;
+                    foundVirtual = true;
+                }
+
+                if (log.address.toLowerCase() === targetTokenLower &&
+                    log.topics[0] === TRANSFER_TOPIC &&
+                    log.topics[2]?.toLowerCase() === PADDED_TAX_ADDR) {
+
+                    const amountRecv = BigInt(log.data || '0');
+                    totalTokenReceivedWei += amountRecv;
                 }
             }
-            successfulLookups++;
+            if (foundVirtual) successfulLookups++;
         }
 
         const pct = Math.round(((i + batch.length) / totalTxns) * 100);
@@ -210,6 +224,7 @@ async function calculateVirtualSpentInTxs(txns, onProgress) {
 
     return {
         totalVirtualSpentWei,
+        totalTokenReceivedWei,
         buybackTxCount: successfulLookups
     };
 }
@@ -222,11 +237,16 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
         BASE_RPCS.unshift(rpcUrl);
     }
 
-    // Fetch Token Name and Symbol for better UX
+    // Fetch Token Name, Symbol, and Decimals for better UX
     onProgress?.(2, 'Fetching Contract Identity...');
     let tokenName = 'Unknown';
     let tokenSymbol = 'TOKEN';
+    let tokenDecimals = 18;
     try {
+        const decHex = await rpcCall('eth_call', [{ to: tokenAddress, data: DECIMALS_SIG }, 'latest']);
+        if (decHex && decHex !== '0x') {
+            tokenDecimals = parseInt(decHex, 16);
+        }
         const symbolHex = await rpcCall('eth_call', [{ to: tokenAddress, data: SYMBOL_SIG }, 'latest']);
         if (symbolHex && symbolHex !== '0x') {
             tokenSymbol = Buffer.from(symbolHex.slice(130).replace(/0+$/, ''), 'hex').toString('utf8').replace(/[^a-zA-Z0-9_\-.]/g, '');
@@ -274,11 +294,13 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
 
     // 3. Resolve exact VIRTUAL spent in each transaction
     let spentVirtual = 0;
+    let tokensReceived = 0;
     let buybackCount = 0;
 
     if (buybackTxns.length > 0) {
-        const { totalVirtualSpentWei, buybackTxCount } = await calculateVirtualSpentInTxs(buybackTxns, onProgress);
+        const { totalVirtualSpentWei, totalTokenReceivedWei, buybackTxCount } = await calculateVirtualSpentInTxs(buybackTxns, tokenAddress, onProgress);
         spentVirtual = Number(totalVirtualSpentWei) / 1e18;
+        tokensReceived = Number(totalTokenReceivedWei) / Math.pow(10, tokenDecimals);
         buybackCount = buybackTxCount;
     }
 
@@ -290,6 +312,7 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
     console.log(`   Token:       ${tokenAddress}`);
     console.log(`   Tax Earned:  ${totalVirtualCollected.toFixed(4)} VIRTUAL`);
     console.log(`   Spent:       ${spentVirtual.toFixed(4)} VIRTUAL`);
+    console.log(`   Got Back:    ${tokensReceived.toFixed(2)} ${tokenSymbol}`);
     console.log(`   Pending:     ${remainingVirtual.toFixed(4)} VIRTUAL`);
     console.log(`   Buyback TXs: ${buybackCount}`);
     console.log('═══════════════════════════════════════════════\n');
@@ -302,6 +325,7 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
         launchBlock: taxReport.launchBlock,
         totalTaxCollectedVirtual: totalVirtualCollected,
         totalVirtualSpentVirtual: spentVirtual,
+        totalTargetTokenReceived: tokensReceived,
         pendingVirtualForBuyback: remainingVirtual,
         buybackTransactionsCount: buybackCount,
         timestamp: new Date().toISOString()
@@ -317,6 +341,7 @@ function buildEmptyBuybackReport(tokenAddress, taxReport) {
         launchBlock: taxReport.launchBlock || 0,
         totalTaxCollectedVirtual: 0,
         totalVirtualSpentVirtual: 0,
+        totalTargetTokenReceived: 0,
         pendingVirtualForBuyback: 0,
         buybackTransactionsCount: 0,
         timestamp: new Date().toISOString()
@@ -334,11 +359,12 @@ export function formatBuybackReport(report) {
         `🏦 Tax Wallet: ${report.taxWallet}`,
         `🚀 Launch Block: ${report.launchBlock === -1 ? 'None/Null' : report.launchBlock.toLocaleString()}`,
         ``,
-        `💰 Total VIRTUAL Tax Collected: ${report.totalTaxCollectedVirtual.toFixed(4)}`,
-        `🔥 VIRTUAL Spent on Buybacks:  ${report.totalVirtualSpentVirtual.toFixed(4)}`,
-        `💵 Remaining Pending VIRTUAL:  ${report.pendingVirtualForBuyback.toFixed(4)}`,
+        `💰 Total VIRTUAL Tax Collected: ${report.totalTaxCollectedVirtual.toFixed(4)} VIRTUAL`,
+        `🔥 VIRTUAL Spent on Buybacks:  ${report.totalVirtualSpentVirtual.toFixed(4)} VIRTUAL`,
+        `📈 ${report.tokenSymbol} Received From Buybacks: ${report.totalTargetTokenReceived.toLocaleString(undefined, { maximumFractionDigits: 2 })} ${report.tokenSymbol}`,
+        `💵 Remaining Pending VIRTUAL:  ${report.pendingVirtualForBuyback.toFixed(4)} VIRTUAL`,
         ``,
-        `📈 Total Buyback Transactions: ${report.buybackTransactionsCount}`,
+        `📊 Total Buyback Transactions: ${report.buybackTransactionsCount}`,
         ``,
         `⏰ Tracking Time: ${report.timestamp}`
     ];
