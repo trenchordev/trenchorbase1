@@ -194,7 +194,8 @@ async function doPhase2Work(job) {
 
             telegramMsg = `✅ <b>Buyback Job Tamamlandı!</b>\n` +
                 `🔑 Job ID: <code>${jobId}</code>\n` +
-                `🎯 Token: <code>${tokenAddress}</code>\n` +
+                `🎯 Token: <b>${report.tokenName} ($${report.tokenSymbol})</b>\n` +
+                `📄 Adres: <code>${tokenAddress}</code>\n` +
                 `💰 Tax: <b>${report.totalTaxCollectedVirtual?.toFixed(4) ?? '?'} VIRTUAL</b>\n` +
                 `🔥 Spent: <b>${report.totalVirtualSpentVirtual?.toFixed(4) ?? '0'} VIRTUAL</b>\n` +
                 `💵 Pending: <b>${report.pendingVirtualForBuyback?.toFixed(4) ?? '?'} VIRTUAL</b>\n` +
