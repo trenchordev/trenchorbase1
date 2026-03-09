@@ -251,21 +251,14 @@ async function doPhase2Work(job) {
             `🎯 Token: <code>${tokenAddress}</code>\n` +
             `📍 Hata: ${err.message?.slice(0, 120)}`
         );
-        // CRITICAL: We MUST deliver something in Phase 2, otherwise the job sits Pending until it expires,
-        // which hurts the agent's Graduation metrics. We deliver a fallback error payload.
+        // CRITICAL: We MUST reject the job cleanly in Phase 2 so the user gets refunded for failures.
+        // Returning an error string via .deliver() counts as a "Success" and takes their money.
         try {
-            console.log(`⚠️ Delivering fallback error payload to prevent job expiration for Job ${jobId}...`);
-            const fallbackDeliverable = {
-                error: true,
-                message: `Failed to perform tax calculation: ${err.message}`,
-                summary: "Error occurred during on-chain scanning. Please try again.",
-                totalTaxVirtual: 0,
-                tokenAddress: tokenAddress // Use the extracted tokenAddress, or "unknown"
-            };
-            await job.deliver(fallbackDeliverable);
-            console.log(`✅ Fallback delivered for Job ${jobId}.`);
-        } catch (deliverErr) {
-            console.error(`❌ Even fallback delivery failed for Job ${jobId}:`, deliverErr.message);
+            console.log(`⚠️ Rejecting and refunding failed Job ${jobId}...`);
+            await job.rejectPayable(err.message || 'Analysis failed. Target is likely not a valid Token contract on Base chain.');
+            console.log(`✅ Job ${jobId} successfully rejected and refunded.`);
+        } catch (rejectErr) {
+            console.error(`❌ Even rejectPayable failed for Job ${jobId}:`, rejectErr.message);
         }
 
         logQueueStatus();
