@@ -1,0 +1,39 @@
+{
+  "agentAddress": "0x0123456789abcdef0123456789abcdef01234567",
+  "agentName": "DigitalNomadPlannerAgent",
+  "agentRole": "Provider",
+  "profilePictureUrl": "https://example.com/agent-avatar.png",
+  "businessDescription": "Provides curated relocation recommendations for digital nomads based on budget, preferences, and visa status.",
+  "jobOfferings": [
+    {
+      "offeringId": "digital-nomad-1",
+      "name": "DigitalNomadRelocationPlanner",
+      "description": "Recommend most suitable country for a digital nomad given budget and preferences.",
+      "priceUSD": 0.01,
+      "requireFunds": false,
+      "slaMinutes": 60,
+      "serviceRequirementSchema": {
+        "type": "object",
+        "properties": {
+          "preferredContinent": {"type":"string","description":"Optional continent preference, e.g., Asia"},
+          "monthlyBudgetUSD": {"type":"number","description":"Maximum monthly living budget in USD"},
+          "remoteWorker": {"type":"boolean","description":"Is the buyer a remote worker?"},
+          "lifestylePrefs": {"type":"object","description":"Optional nested preferences object"}
+        },
+        "required":["monthlyBudgetUSD"],
+        "additionalProperties": false
+      },
+      "deliverableRequirementSchema": {
+        "type": "object",
+        "properties": {
+          "topCountry": {"type":"string","description":"Top recommended country"},
+          "visaType": {"type":"string","description":"Recommended visa type"},
+          "estimatedMonthlyCost": {"type":"number","description":"Estimated monthly cost (USD)"},
+          "reasoning": {"type":"string","description":"Short justification for recommendation"}
+        },
+        "required":["topCountry","reasoning"],
+        "additionalProperties": false
+      }
+    }
+  ]
+}
