@@ -33,6 +33,10 @@ const RPC_TIMEOUT_MS = 12_000;   // per-call timeout
 const DELAY_BETWEEN_MS = 200;      // rate-limit safety delay (higher = fewer 429s under concurrent load)
 const DISCOVERY_WINDOW = 600_000;  // scan up to ~14 days after deploy to find launch (some tokens have 10+ day gaps)
 
+// ERC-20 symbol() and name() bare minimum ABI signatures
+const SYMBOL_SIG = '0x95d89b41';
+const NAME_SIG = '0x06fdde03';
+
 // Public Base RPC endpoints — ordered by reliability (most stable first)
 // Supports DRPC_RPC_URL or ALCHEMY_RPC_URL env vars (drpc takes priority).
 // All others are free public RPCs used as fallback.
@@ -289,6 +293,23 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
     const progress = (pct, msg) => { onProgress?.(pct, msg); console.log(`[${pct}%] ${msg}`); };
     const normToken = tokenAddress.toLowerCase();
 
+    // Fetch Token Name and Symbol for better UX
+    let tokenName = 'Unknown';
+    let tokenSymbol = 'TOKEN';
+    try {
+        const symbolHex = await rpcCall('eth_call', [{ to: tokenAddress, data: SYMBOL_SIG }, 'latest']);
+        if (symbolHex && symbolHex !== '0x') {
+            tokenSymbol = Buffer.from(symbolHex.slice(130).replace(/0+$/, ''), 'hex').toString('utf8').replace(/[^a-zA-Z0-9_\-.]/g, '');
+            if (!tokenSymbol) tokenSymbol = Buffer.from(symbolHex.slice(2).replace(/0+$/, ''), 'hex').toString('utf8').replace(/[^a-zA-Z0-9_\-.]/g, '');
+        }
+        const nameHex = await rpcCall('eth_call', [{ to: tokenAddress, data: NAME_SIG }, 'latest']);
+        if (nameHex && nameHex !== '0x') {
+            tokenName = Buffer.from(nameHex.slice(130).replace(/0+$/, ''), 'hex').toString('utf8').replace(/[^a-zA-Z0-9\s_\-.]/g, '').trim();
+        }
+    } catch (err) {
+        console.warn(`⚠️ Could not fetch token identity for ${tokenAddress}`);
+    }
+
     // ── Step 1: Current block + deploy block ─────────────────────────────────
     progress(5, 'Getting current block...');
     const currentBlockHex = await rpcCall('eth_blockNumber', []);
@@ -374,6 +395,8 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
 
     const report = {
         tokenAddress,
+        tokenSymbol,
+        tokenName,
         taxWallet: TAX_ADDRESS,
         launchBlock,
         deployBlock,
@@ -406,6 +429,8 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
 function buildEmptyReport(tokenAddress, launchBlock, endBlock) {
     return {
         tokenAddress,
+        tokenSymbol: 'TOKEN',
+        tokenName: 'Unknown',
         taxWallet: TAX_ADDRESS,
         launchBlock,
         deployBlock: launchBlock,
@@ -430,7 +455,8 @@ function buildEmptyReport(tokenAddress, launchBlock, endBlock) {
  */
 export function formatTaxReport(report) {
     const lines = [
-        `📊 Tax Report — ${report.tokenAddress}`,
+        `📊 Tax Report — ${report.tokenName} ($${report.tokenSymbol})`,
+        `📍 Contract: ${report.tokenAddress}`,
         ``,
         `🏷️  Tax Wallet: ${report.taxWallet}`,
         `🚀 Launch Block: ${report.launchBlock.toLocaleString()}`,

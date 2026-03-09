@@ -217,7 +217,8 @@ async function doPhase2Work(job) {
 
             telegramMsg = `✅ <b>Tax Job Tamamlandı!</b>\n` +
                 `🔑 Job ID: <code>${jobId}</code>\n` +
-                `🎯 Token: <code>${tokenAddress}</code>\n` +
+                `🎯 Token: <b>${report.tokenName} ($${report.tokenSymbol})</b>\n` +
+                `📄 Adres: <code>${tokenAddress}</code>\n` +
                 `💰 Vergi: <b>${report.totalTaxVirtual?.toFixed(4) ?? '?'} VIRTUAL</b>\n` +
                 `📄 TX Sayısı: ${report.validTransactions ?? 0}\n` +
                 `⏱ Süre: ${Math.round((Date.now() - _jobStartTime) / 1000)}s`;
