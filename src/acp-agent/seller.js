@@ -120,24 +120,32 @@ async function enqueueCalculation(job) {
 // ─── Request Validation ──────────────────────────────────────────────────────
 
 /**
- * Extracts token address and intent from a job's requirement.
+ * Extracts token address and intent from the entire job object.
+ * We scan the entire Job JSON because UI form submissions strictly pass "tokenAddress"
+ * without the natural language identifying the "buyback" intent.
  */
-function parseJobRequirement(requirement) {
-    if (!requirement) return { tokenAddress: null, intent: 'tax_scan' };
+function parseJobRequirement(job) {
+    if (!job) return { tokenAddress: null, intent: 'tax_scan' };
 
     let tokenAddress = null;
     let intent = 'tax_scan';
-    const str = typeof requirement === 'string' ? requirement : JSON.stringify(requirement);
 
-    // Extract token address
-    const match = str.match(/0x[a-fA-F0-9]{40}/);
+    // Safely extract token address from requirement or memos
+    const req = job.requirement || job.memos?.[0]?.content;
+    const reqStr = typeof req === 'string' ? req : JSON.stringify(req || {});
+    const memoStr = JSON.stringify(job.memos || []);
+
+    // Look for 0x address
+    let match = reqStr.match(/0x[a-fA-F0-9]{40}/i);
+    if (!match) match = memoStr.match(/0x[a-fA-F0-9]{40}/i);
     if (match) tokenAddress = match[0];
 
     // Deduce user Intent (Buyback vs Standard Tax Scan)
-    const lowerStr = str.toLowerCase();
+    // We scan the entire job object to catch keyword intent that might be in the JobName or Request payload
+    const fullJobStr = JSON.stringify(job).toLowerCase();
     const buybackKeywords = ['buyback', 'spend', 'spent', 'remaining', 'trenchor_buyback', 'tax_buyback', 'buyback_tax'];
 
-    if (buybackKeywords.some(kw => lowerStr.includes(kw))) {
+    if (buybackKeywords.some(kw => fullJobStr.includes(kw))) {
         intent = 'buyback_track';
     }
 
@@ -171,8 +179,7 @@ async function doPhase2Work(job) {
     console.log(`🔄 Phase 2: Starting work for Job ${jobId}...`);
 
     // Extract token address BEFORE try so it's available in catch for Telegram notification
-    const requirement = job.requirement || job.memos?.[0]?.content;
-    const { tokenAddress, intent } = parseJobRequirement(requirement);
+    const { tokenAddress, intent } = parseJobRequirement(job);
 
     try {
         if (!tokenAddress) {
@@ -315,7 +322,7 @@ async function handleNewTask(job) {
             }
 
             // Extract token address and intent
-            const { tokenAddress, intent } = parseJobRequirement(requirement);
+            const { tokenAddress, intent } = parseJobRequirement(job);
             if (!tokenAddress) {
                 console.log(`🚫 REJECTING: No valid token address in requirement`);
                 jobStats.rejected++;
