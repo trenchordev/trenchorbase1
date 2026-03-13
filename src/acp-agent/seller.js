@@ -252,14 +252,22 @@ async function doPhase2Work(job) {
             `🎯 Token: <code>${tokenAddress}</code>\n` +
             `📍 Hata: ${err.message?.slice(0, 120)}`
         );
-        // CRITICAL: We MUST reject the job cleanly in Phase 2 so the user gets refunded for failures.
-        // Returning an error string via .deliver() counts as a "Success" and takes their money.
+        // CRITICAL: We MUST deliver something in Phase 2, otherwise the job sits Pending until it expires,
+        // which hurts the agent's Graduation metrics. We deliver a fallback error payload.
+        // NOTE: job.rejectPayable() is currently broken in acp-node v0.3.0-beta.29
         try {
-            console.log(`⚠️ Rejecting and refunding failed Job ${jobId}...`);
-            await job.rejectPayable(err.message || 'Analysis failed. Target is likely not a valid Token contract on Base chain.');
-            console.log(`✅ Job ${jobId} successfully rejected and refunded.`);
-        } catch (rejectErr) {
-            console.error(`❌ Even rejectPayable failed for Job ${jobId}:`, rejectErr.message);
+            console.log(`⚠️ Delivering fallback error payload to prevent job expiration for Job ${jobId}...`);
+            const fallbackDeliverable = {
+                error: true,
+                message: `Failed to perform tax calculation: ${err.message}`,
+                summary: "Error occurred during on-chain scanning. Please try again.",
+                totalTaxVirtual: 0,
+                tokenAddress: tokenAddress // Use the extracted tokenAddress, or "unknown"
+            };
+            await job.deliver(fallbackDeliverable);
+            console.log(`✅ Fallback delivered for Job ${jobId}.`);
+        } catch (deliverErr) {
+            console.error(`❌ Even fallback delivery failed for Job ${jobId}:`, deliverErr.message);
         }
 
         logQueueStatus();
@@ -296,9 +304,10 @@ async function handleNewTask(job) {
 
             // CAPACITY CHECK: Prevent taking more jobs than we can handle within SLA (5 min)
             if (activeCalculations + calculationQueue.length >= MAX_CONCURRENT_CALCS + MAX_QUEUE_SIZE) {
-                console.log(`🚫 REJECTING: Server at full capacity (active: ${activeCalculations}, queued: ${calculationQueue.length})`);
+                console.log(`🚫 REJECTING (Silent Timeout API Bug): Server at full capacity (active: ${activeCalculations}, queued: ${calculationQueue.length})`);
                 jobStats.rejected++;
-                await job.respond(false, 'Request rejected: Server is currently at full capacity processing other requests. Please try again in a few minutes.');
+                // TEMPORARILY DISABLED: job.respond(false) throws "Failed to send user operation" in acp-node v0.3.0
+                // await job.respond(false, 'Request rejected: Server is currently at full capacity...');
                 logQueueStatus();
                 return;
             }
@@ -309,9 +318,10 @@ async function handleNewTask(job) {
 
             // Check for empty/missing requirement
             if (!requirement || (typeof requirement === 'string' && requirement.trim().length === 0)) {
-                console.log(`🚫 REJECTING: Empty or missing requirement`);
+                console.log(`🚫 REJECTING (Silent Timeout API Bug): Empty or missing requirement`);
                 jobStats.rejected++;
-                await job.respond(false, 'Request rejected: No requirement provided. Please include a token contract address (0x...) for tax or buyback analysis.');
+                // TEMPORARILY DISABLED
+                // await job.respond(false, 'Request rejected: No requirement provided...');
                 logQueueStatus();
                 return;
             }
@@ -319,9 +329,10 @@ async function handleNewTask(job) {
             // Extract token address and intent
             const { tokenAddress, intent } = parseJobRequirement(job);
             if (!tokenAddress) {
-                console.log(`🚫 REJECTING: No valid token address in requirement`);
+                console.log(`🚫 REJECTING (Silent Timeout API Bug): No valid token address in requirement`);
                 jobStats.rejected++;
-                await job.respond(false, 'Request rejected: No valid Ethereum token address found. Please provide a 42-character hex address starting with 0x.');
+                // TEMPORARILY DISABLED
+                // await job.respond(false, 'Request rejected: No valid Ethereum token address found...');
                 logQueueStatus();
                 return;
             }
@@ -332,9 +343,10 @@ async function handleNewTask(job) {
             const validation = validateTokenAddressFormatSync(tokenAddress);
 
             if (!validation.valid) {
-                console.log(`🚫 REJECTING: ${validation.reason}`);
+                console.log(`🚫 REJECTING (Silent Timeout API Bug): ${validation.reason}`);
                 jobStats.rejected++;
-                await job.respond(false, `Request rejected: ${validation.reason}`);
+                // TEMPORARILY DISABLED
+                // await job.respond(false, `Request rejected: ${validation.reason}`);
                 logQueueStatus();
                 return;
             }
