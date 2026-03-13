@@ -22,6 +22,8 @@
 import acpModule from '@virtuals-protocol/acp-node';
 const { AcpContractClientV2, baseAcpConfigV2 } = acpModule;
 const AcpClient = acpModule.default || acpModule;
+import { createPublicClient, http } from 'viem';
+import { base } from 'viem/chains';
 import { calculateTax, formatTaxReport } from './acpTaxCalculator.js';
 import { calculateBuybacks, formatBuybackReport } from './acpBuybackTracker.js';
 import { config } from 'dotenv';
