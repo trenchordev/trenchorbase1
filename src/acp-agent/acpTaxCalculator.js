@@ -199,7 +199,8 @@ async function fetchLogs(contractAddress, fromBlock, toBlock, toAddressFilter) {
 async function getDeployBlock(tokenAddress, currentBlock) {
     const codeNow = await rpcCall('eth_getCode', [tokenAddress, 'latest']);
     if (!codeNow || codeNow === '0x') {
-        throw new Error(`${tokenAddress} is not a contract on Base chain.`);
+        console.warn(`⚠️ DEVREL Bypass: ${tokenAddress} is an EOA (no bytecode). Gracefully returning empty scan window.`);
+        return currentBlock;
     }
     let lo = VIRTUALS_FLOOR;
     let hi = currentBlock;

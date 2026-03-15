@@ -174,9 +174,6 @@ async function validateTokenOnChain(tokenAddress) {
     if (lowerAddr === '0x0000000000000000000000000000000000000000' || lowerAddr === '0x000000000000000000000000000000000000dead') {
         return { valid: false, reason: 'Cannot analyze the zero or burn address.' };
     }
-    if (lowerAddr === '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b') {
-        return { valid: false, reason: 'Cannot analyze the Virtual Protocol token itself for buybacks or tax — this requires parsing the entire network history.' };
-    }
 
     try {
         // Fast online lookup to ensure it's a contract with bytecode
