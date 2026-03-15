@@ -8,9 +8,9 @@ const TAX_ADDRESS = '0x32487287c65f11d53bbca89c2472171eb09bf337';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const PADDED_TAX_ADDR = '0x000000000000000000000000' + TAX_ADDRESS.slice(2).toLowerCase();
 
-const CHUNK_SIZE = 2000;           // Maximum blocks per getLogs call supported by public RPCs
-const CONCURRENT_CHUNKS = 50;      // How many chunks to process simultaneously (parallel fetch)
-const RPC_TIMEOUT_MS = 15_000;
+const CHUNK_SIZE = 50000;          // Aggressively scan up to 50k blocks per request 
+const CONCURRENT_CHUNKS = 20;      // Lower concurrency to respect RPC rate limits when fetching huge chunks
+const RPC_TIMEOUT_MS = 25_000;     // Allow more time for massive payload resolutions
 
 // Public Base RPC endpoints
 const _customRpc = process.env.DRPC_RPC_URL || process.env.ALCHEMY_RPC_URL;
@@ -55,10 +55,10 @@ async function rpcCall(method, params, overrideTimeout = null) {
             return data.result;
         } catch (err) {
             const status = err?.response?.status;
-            if (status === 400 || err.message?.includes('413')) {
+            if (status === 400 || err.message?.includes('413') || status === 413) {
                 // Ignore 413, that's block range error, but don't blacklist endpoint
                 if (status === 400) _deadEndpoints.add(url);
-                continue;
+                throw new Error(`RPC size limit hit (413/400): ${err.message}`);
             }
             if (attempt < ordered.length - 1) {
                 _strikeCount[url] = (_strikeCount[url] ?? 0) + 1;
@@ -75,24 +75,29 @@ async function rpcCall(method, params, overrideTimeout = null) {
  * Fetch logs for a specific chunk. Retries with smaller chunks if it hits 413 limits.
  */
 async function getLogsChunk(contractAddress, fromBlock, toBlock, topics) {
-    let retries = 0;
-    while (retries < 3) {
-        try {
-            return await rpcCall('eth_getLogs', [{
-                address: contractAddress,
-                fromBlock: '0x' + fromBlock.toString(16),
-                toBlock: '0x' + toBlock.toString(16),
-                topics,
-            }], 20000);
-        } catch (err) {
-            retries++;
-            // If it's a size limit, sleep and retry. The caller logic will handle recursive halving if needed,
-            // but 2,000 blocks is universally safe on Base DRPC.
-            await new Promise(r => setTimeout(r, 1000 * retries));
+    try {
+        return await rpcCall('eth_getLogs', [{
+            address: contractAddress,
+            fromBlock: '0x' + fromBlock.toString(16),
+            toBlock: '0x' + toBlock.toString(16),
+            topics,
+        }], 25000);
+    } catch (err) {
+        // If the payload is too large natively (413 or 400 limitation), dynamically slice the chunk in half and recurse.
+        // Base mainnet public RPCs aggressively limit getLogs if the range contains too many target events.
+        if (err.message && (err.message.includes('413') || err.message.includes('400') || err.message.includes('size limit') || err.message.includes('block range'))) {
+             if (toBlock - fromBlock > 2000) {
+                 const midBlock = Math.floor((fromBlock + toBlock) / 2);
+                 const [logs1, logs2] = await Promise.all([
+                     getLogsChunk(contractAddress, fromBlock, midBlock, topics),
+                     getLogsChunk(contractAddress, midBlock + 1, toBlock, topics)
+                 ]);
+                 return [...(logs1 || []), ...(logs2 || [])];
+             }
         }
+        console.warn(`⚠️ getLogs permanently failed for chunk ${fromBlock}-${toBlock}: ${err.message}`);
+        return [];
     }
-    console.warn(`⚠️ getLogs failed repeatedly for chunk ${fromBlock}-${toBlock}`);
-    return [];
 }
 
 // ─── Parallel Chunking Scanner ───────────────────────────────────────────────
