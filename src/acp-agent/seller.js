@@ -154,21 +154,45 @@ function parseJobRequirement(job) {
     return { tokenAddress, intent };
 }
 
+const validationClient = createPublicClient({ chain: base, transport: http(RPC_URL) });
+
 /**
- * Validates a token address FORMAT only (no RPC calls).
- * Phase 0 must never make on-chain calls — they can cause the agent to miss
- * the ACP acceptance window and get an "Expired Job" penalty.
+ * Validates a token address FORMAT and performs a fast on-chain verification.
+ * Resolves DEVREL negative testing requirements by formally rejecting EOAs and burn addresses.
+ * Wraps the RPC call in a strict timeout to ensure we never miss the 5-second ACP acceptance SLA.
  * Returns { valid: true } or { valid: false, reason: string }
  */
-function validateTokenAddressFormatSync(tokenAddress) {
+async function validateTokenOnChain(tokenAddress) {
     if (!tokenAddress || typeof tokenAddress !== 'string') {
         return { valid: false, reason: 'No token address provided.' };
     }
-    if (!/^0x[a-fA-F0-9]{40}$/.test(tokenAddress)) {
+    if (!/^0x[a-fA-F0-9]{40}$/i.test(tokenAddress)) {
         return { valid: false, reason: `Invalid token address format: "${tokenAddress}". Must be a 42-character hex string starting with 0x.` };
     }
-    if (tokenAddress === '0x0000000000000000000000000000000000000000') {
-        return { valid: false, reason: 'Cannot analyze the zero address.' };
+    
+    const lowerAddr = tokenAddress.toLowerCase();
+    if (lowerAddr === '0x0000000000000000000000000000000000000000' || lowerAddr === '0x000000000000000000000000000000000000dead') {
+        return { valid: false, reason: 'Cannot analyze the zero or burn address.' };
+    }
+    if (lowerAddr === '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b') {
+        return { valid: false, reason: 'Cannot analyze the Virtual Protocol token itself for buybacks or tax — this requires parsing the entire network history.' };
+    }
+
+    try {
+        // Fast online lookup to ensure it's a contract with bytecode
+        const bytecode = await Promise.race([
+            validationClient.getBytecode({ address: tokenAddress }),
+            new Promise((_, reject) => setTimeout(() => reject(new Error('timeout')), 3000))
+        ]);
+        if (!bytecode || bytecode === '0x') {
+            return { valid: false, reason: `${tokenAddress} is not a deployed contract on Base network. Please provide a valid ERC20 token address.` };
+        }
+    } catch (e) {
+        // Accept the job if it timed out to prevent falsely punishing users for network lag.
+        // We will catch actual non-contracts during Phase 2 if we accepted them erroneously.
+        if (!e.message.includes('timeout')) {
+             return { valid: false, reason: `RPC Error validating contract: ${e.message}`};
+        }
     }
     return { valid: true };
 }
@@ -254,22 +278,14 @@ async function doPhase2Work(job) {
             `🎯 Token: <code>${tokenAddress}</code>\n` +
             `📍 Hata: ${err.message?.slice(0, 120)}`
         );
-        // CRITICAL: We MUST deliver something in Phase 2, otherwise the job sits Pending until it expires,
-        // which hurts the agent's Graduation metrics. We deliver a fallback error payload.
-        // NOTE: job.rejectPayable() is currently broken in acp-node v0.3.0-beta.29
+        // CRITICAL: We MUST reject the job formally so Virtuals platform triggers the
+        // smart contract refund for the user, fulfilling DEVREL negative test rules.
         try {
-            console.log(`⚠️ Delivering fallback error payload to prevent job expiration for Job ${jobId}...`);
-            const fallbackDeliverable = {
-                error: true,
-                message: `Failed to perform tax calculation: ${err.message}`,
-                summary: "Error occurred during on-chain scanning. Please try again.",
-                totalTaxVirtual: 0,
-                tokenAddress: tokenAddress // Use the extracted tokenAddress, or "unknown"
-            };
-            await job.deliver(fallbackDeliverable);
-            console.log(`✅ Fallback delivered for Job ${jobId}.`);
-        } catch (deliverErr) {
-            console.error(`❌ Even fallback delivery failed for Job ${jobId}:`, deliverErr.message);
+            console.log(`⚠️ formally rejecting Job ${jobId} to trigger refund...`);
+            await job.rejectPayable(`Execution failed: ${err.message}`);
+            console.log(`✅ Reject signal sent to Virtuals for Job ${jobId}.`);
+        } catch (rejectErr) {
+            console.error(`❌ SDK Failed to reject Job ${jobId}:`, rejectErr.message);
         }
 
         logQueueStatus();
@@ -306,10 +322,9 @@ async function handleNewTask(job) {
 
             // CAPACITY CHECK: Prevent taking more jobs than we can handle within SLA (5 min)
             if (activeCalculations + calculationQueue.length >= MAX_CONCURRENT_CALCS + MAX_QUEUE_SIZE) {
-                console.log(`🚫 REJECTING (Silent Timeout API Bug): Server at full capacity (active: ${activeCalculations}, queued: ${calculationQueue.length})`);
+                console.log(`🚫 REJECTING: Server at full capacity (active: ${activeCalculations}, queued: ${calculationQueue.length})`);
                 jobStats.rejected++;
-                // TEMPORARILY DISABLED: job.respond(false) throws "Failed to send user operation" in acp-node v0.3.0
-                // await job.respond(false, 'Request rejected: Server is currently at full capacity...');
+                await job.respond(false, 'Request rejected: Server is currently at full capacity processing other requests. Please try again in a few minutes.');
                 logQueueStatus();
                 return;
             }
@@ -320,10 +335,9 @@ async function handleNewTask(job) {
 
             // Check for empty/missing requirement
             if (!requirement || (typeof requirement === 'string' && requirement.trim().length === 0)) {
-                console.log(`🚫 REJECTING (Silent Timeout API Bug): Empty or missing requirement`);
+                console.log(`🚫 REJECTING: Empty or missing requirement`);
                 jobStats.rejected++;
-                // TEMPORARILY DISABLED
-                // await job.respond(false, 'Request rejected: No requirement provided...');
+                await job.respond(false, 'Request rejected: No requirement provided. Please include a token contract address (0x...) for tax or buyback analysis.');
                 logQueueStatus();
                 return;
             }
@@ -331,24 +345,21 @@ async function handleNewTask(job) {
             // Extract token address and intent
             const { tokenAddress, intent } = parseJobRequirement(job);
             if (!tokenAddress) {
-                console.log(`🚫 REJECTING (Silent Timeout API Bug): No valid token address in requirement`);
+                console.log(`🚫 REJECTING: No valid token address in requirement`);
                 jobStats.rejected++;
-                // TEMPORARILY DISABLED
-                // await job.respond(false, 'Request rejected: No valid Ethereum token address found...');
+                await job.respond(false, 'Request rejected: No valid Ethereum token address found. Please provide a 42-character hex address starting with 0x.');
                 logQueueStatus();
                 return;
             }
 
-            // Simple format validation only — no on-chain calls in Phase 0.
-            // On-chain checks here caused the 5s acceptance timeout to fire (Expired Jobs).
-            // The token address format check is sufficient to accept/reject at this stage.
-            const validation = validateTokenAddressFormatSync(tokenAddress);
+            // DEVREL mandated on-chain validation for contracts in Phase 0.
+            // Wrapped with a strict 3-second timeout so it never causes true jobs to EXPIRE.
+            const validation = await validateTokenOnChain(tokenAddress);
 
             if (!validation.valid) {
-                console.log(`🚫 REJECTING (Silent Timeout API Bug): ${validation.reason}`);
+                console.log(`🚫 REJECTING: ${validation.reason}`);
                 jobStats.rejected++;
-                // TEMPORARILY DISABLED
-                // await job.respond(false, `Request rejected: ${validation.reason}`);
+                await job.respond(false, `Request rejected: ${validation.reason}`);
                 logQueueStatus();
                 return;
             }

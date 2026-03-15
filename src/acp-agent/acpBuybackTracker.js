@@ -1,5 +1,6 @@
 import axios from 'axios';
-import { calculateTax } from './acpTaxCalculator.js';
+import { createPublicClient, http, parseAbi, trim } from 'viem';
+import { base } from 'viem/chains';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
 
@@ -27,10 +28,13 @@ const _deadEndpoints = new Set();
 const _strikeCount = {};
 const STRIKE_LIMIT = 5;
 
-// ERC-20 symbol(), name(), and decimals() bare minimum ABI signatures
 const SYMBOL_SIG = '0x95d89b41';
-const NAME_SIG = '0x06fdde03';
-const DECIMALS_SIG = '0x313ce567';
+
+// ─── Viem Client ────────────────────────────────────────────────────────────
+
+const viemClient = createPublicClient({ chain: base, transport: http(process.env.DRPC_RPC_URL || process.env.ALCHEMY_RPC_URL || 'https://mainnet.base.org') });
+const erc20StringAbi = parseAbi(['function name() view returns (string)', 'function symbol() view returns (string)', 'function decimals() view returns (uint8)']);
+const erc20Bytes32Abi = parseAbi(['function name() view returns (bytes32)', 'function symbol() view returns (bytes32)']);
 
 // ─── RPC Engine ─────────────────────────────────────────────────────────────
 
@@ -242,27 +246,32 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
         BASE_RPCS.unshift(rpcUrl);
     }
 
-    // Fetch Token Name, Symbol, and Decimals for better UX
+    // Fetch Token Name, Symbol, and Decimals utilizing Viem for robust ABI decoding
     onProgress?.(2, 'Fetching Contract Identity...');
     let tokenName = 'Unknown';
     let tokenSymbol = 'TOKEN';
     let tokenDecimals = 18;
+    const normToken = tokenAddress.toLowerCase();
     try {
-        const decHex = await rpcCall('eth_call', [{ to: tokenAddress, data: DECIMALS_SIG }, 'latest']);
-        if (decHex && decHex !== '0x') {
-            tokenDecimals = parseInt(decHex, 16);
+        try {
+            tokenDecimals = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'decimals' });
+        } catch {}
+
+        try {
+            tokenName = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'name' });
+        } catch {
+            const nameB = await viemClient.readContract({ address: normToken, abi: erc20Bytes32Abi, functionName: 'name' });
+            tokenName = trim(nameB, { dir: 'right' }).replace(/[^a-zA-Z0-9\s_\-.]/g, '').trim();
         }
-        const symbolHex = await rpcCall('eth_call', [{ to: tokenAddress, data: SYMBOL_SIG }, 'latest']);
-        if (symbolHex && symbolHex !== '0x') {
-            tokenSymbol = Buffer.from(symbolHex.slice(130).replace(/0+$/, ''), 'hex').toString('utf8').replace(/[^a-zA-Z0-9_\-.]/g, '');
-            if (!tokenSymbol) tokenSymbol = Buffer.from(symbolHex.slice(2).replace(/0+$/, ''), 'hex').toString('utf8').replace(/[^a-zA-Z0-9_\-.]/g, '');
-        }
-        const nameHex = await rpcCall('eth_call', [{ to: tokenAddress, data: NAME_SIG }, 'latest']);
-        if (nameHex && nameHex !== '0x') {
-            tokenName = Buffer.from(nameHex.slice(130).replace(/0+$/, ''), 'hex').toString('utf8').replace(/[^a-zA-Z0-9\s_\-.]/g, '').trim();
+
+        try {
+            tokenSymbol = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'symbol' });
+        } catch {
+            const symbolB = await viemClient.readContract({ address: normToken, abi: erc20Bytes32Abi, functionName: 'symbol' });
+            tokenSymbol = trim(symbolB, { dir: 'right' }).replace(/[^a-zA-Z0-9_\-.]/g, '');
         }
     } catch (err) {
-        console.warn(`⚠️ Could not fetch token identity for ${tokenAddress}`);
+        console.warn(`⚠️ Could not fetch token identity for ${tokenAddress}: ${err.shortMessage || err.message}`);
     }
 
     console.log(`\n🔍 Starting Buyback Analysis for ${tokenName} ($${tokenSymbol}) - ${tokenAddress}`);
