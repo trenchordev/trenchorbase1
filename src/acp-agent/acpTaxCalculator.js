@@ -19,7 +19,7 @@
  */
 
 import axios from 'axios';
-import { createPublicClient, http, parseAbi, trim } from 'viem';
+import { createPublicClient, http, parseAbi, trim, hexToString } from 'viem';
 import { base } from 'viem/chains';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -30,7 +30,7 @@ const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a
 const BLOCKS_TO_SCAN = 2940;      // ~98 minutes at 2s/block
 const CHUNK_SIZE = 2000;           // blocks per eth_getLogs call (2000 safe for drpc/llamarpc)
 const DISCOVERY_PARALLELISM = 3;   // how many chunks to scan simultaneously during launch discovery
-const VIRTUALS_FLOOR = 14_000_000; // oldest possible Virtuals token on Base
+const VIRTUALS_FLOOR = 1_000_000;  // floor for deploy-block binary search; 1M covers all Base history incl. early VIRTUAL token
 const RPC_TIMEOUT_MS = 12_000;   // per-call timeout
 const DELAY_BETWEEN_MS = 200;      // rate-limit safety delay (higher = fewer 429s under concurrent load)
 const DISCOVERY_WINDOW = 600_000;  // scan up to ~14 days after deploy to find launch (some tokens have 10+ day gaps)
@@ -204,7 +204,8 @@ async function getDeployBlock(tokenAddress, currentBlock) {
     }
     let lo = VIRTUALS_FLOOR;
     let hi = currentBlock;
-    while (lo < hi) {
+    let maxIter = 60; // log2(currentBlock) ≈ 25; 60 gives generous room and prevents infinite loops on persistent RPC errors
+    while (lo < hi && maxIter-- > 0) {
         const mid = Math.floor((lo + hi) / 2);
         try {
             const code = await rpcCall('eth_getCode', [tokenAddress, '0x' + mid.toString(16)]);
@@ -300,25 +301,32 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
     const progress = (pct, msg) => { onProgress?.(pct, msg); console.log(`[${pct}%] ${msg}`); };
     const normToken = tokenAddress.toLowerCase();
 
-    // Fetch Token Name and Symbol utilizing Viem for robust ABI decoding
+    // Fetch Token Name and Symbol utilizing Viem for robust ABI decoding.
+    // Each field has its own independent try-catch so a failure on one never skips the other.
+    // bytes32 fallback uses hexToString(trim(...)) — viem's trim() returns hex, not a decoded string.
     let tokenName = 'Unknown';
     let tokenSymbol = 'TOKEN';
-    try {
-        try {
-            tokenName = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'name' });
-        } catch {
-            const nameB = await viemClient.readContract({ address: normToken, abi: erc20Bytes32Abi, functionName: 'name' });
-            tokenName = trim(nameB, { dir: 'right' }).replace(/[^a-zA-Z0-9\s_\-.]/g, '').trim();
-        }
 
+    try {
+        tokenName = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'name' });
+    } catch {
         try {
-            tokenSymbol = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'symbol' });
-        } catch {
-            const symbolB = await viemClient.readContract({ address: normToken, abi: erc20Bytes32Abi, functionName: 'symbol' });
-            tokenSymbol = trim(symbolB, { dir: 'right' }).replace(/[^a-zA-Z0-9_\-.]/g, '');
+            const nameB = await viemClient.readContract({ address: normToken, abi: erc20Bytes32Abi, functionName: 'name' });
+            tokenName = hexToString(trim(nameB, { dir: 'right' })).trim();
+        } catch (err) {
+            console.warn(`⚠️ name() failed for ${tokenAddress}: ${err.shortMessage || err.message}`);
         }
-    } catch (err) {
-        console.warn(`⚠️ Could not fetch token identity for ${tokenAddress}: ${err.shortMessage || err.message}`);
+    }
+
+    try {
+        tokenSymbol = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'symbol' });
+    } catch {
+        try {
+            const symbolB = await viemClient.readContract({ address: normToken, abi: erc20Bytes32Abi, functionName: 'symbol' });
+            tokenSymbol = hexToString(trim(symbolB, { dir: 'right' })).trim();
+        } catch (err) {
+            console.warn(`⚠️ symbol() failed for ${tokenAddress}: ${err.shortMessage || err.message}`);
+        }
     }
 
     // ── Step 1: Current block + deploy block ─────────────────────────────────
@@ -338,7 +346,7 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
     if (launchBlock < 0) {
         // Token has never had a taxed buy in its lifecycle
         progress(100, 'No taxed buys detected.');
-        return buildEmptyReport(tokenAddress, deployBlock, deployBlock + BLOCKS_TO_SCAN);
+        return buildEmptyReport(tokenAddress, deployBlock, deployBlock + BLOCKS_TO_SCAN, tokenName, tokenSymbol);
     }
 
     const endBlock = Math.min(launchBlock + BLOCKS_TO_SCAN, currentBlock);
@@ -437,11 +445,11 @@ export async function calculateTax(tokenAddress, rpcUrl, onProgress) {
     return report;
 }
 
-function buildEmptyReport(tokenAddress, launchBlock, endBlock) {
+function buildEmptyReport(tokenAddress, launchBlock, endBlock, tokenName = 'Unknown', tokenSymbol = 'TOKEN') {
     return {
         tokenAddress,
-        tokenSymbol: 'TOKEN',
-        tokenName: 'Unknown',
+        tokenSymbol,
+        tokenName,
         taxWallet: TAX_ADDRESS,
         launchBlock,
         deployBlock: launchBlock,

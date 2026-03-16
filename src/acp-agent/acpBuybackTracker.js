@@ -1,5 +1,5 @@
 import axios from 'axios';
-import { createPublicClient, http, parseAbi, trim } from 'viem';
+import { createPublicClient, http, parseAbi, trim, hexToString } from 'viem';
 import { base } from 'viem/chains';
 
 // ─── Constants ────────────────────────────────────────────────────────────────
@@ -246,32 +246,39 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
         BASE_RPCS.unshift(rpcUrl);
     }
 
-    // Fetch Token Name, Symbol, and Decimals utilizing Viem for robust ABI decoding
+    // Fetch Token Name, Symbol, and Decimals utilizing Viem for robust ABI decoding.
+    // Each field has its own independent try-catch so a failure on one never skips the other.
+    // bytes32 fallback uses hexToString(trim(...)) — viem's trim() returns hex, not a decoded string.
     onProgress?.(2, 'Fetching Contract Identity...');
     let tokenName = 'Unknown';
     let tokenSymbol = 'TOKEN';
     let tokenDecimals = 18;
     const normToken = tokenAddress.toLowerCase();
+
     try {
-        try {
-            tokenDecimals = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'decimals' });
-        } catch {}
+        tokenDecimals = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'decimals' });
+    } catch { /* keep default 18 */ }
 
+    try {
+        tokenName = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'name' });
+    } catch {
         try {
-            tokenName = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'name' });
-        } catch {
             const nameB = await viemClient.readContract({ address: normToken, abi: erc20Bytes32Abi, functionName: 'name' });
-            tokenName = trim(nameB, { dir: 'right' }).replace(/[^a-zA-Z0-9\s_\-.]/g, '').trim();
+            tokenName = hexToString(trim(nameB, { dir: 'right' })).trim();
+        } catch (err) {
+            console.warn(`⚠️ name() failed for ${tokenAddress}: ${err.shortMessage || err.message}`);
         }
+    }
 
+    try {
+        tokenSymbol = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'symbol' });
+    } catch {
         try {
-            tokenSymbol = await viemClient.readContract({ address: normToken, abi: erc20StringAbi, functionName: 'symbol' });
-        } catch {
             const symbolB = await viemClient.readContract({ address: normToken, abi: erc20Bytes32Abi, functionName: 'symbol' });
-            tokenSymbol = trim(symbolB, { dir: 'right' }).replace(/[^a-zA-Z0-9_\-.]/g, '');
+            tokenSymbol = hexToString(trim(symbolB, { dir: 'right' })).trim();
+        } catch (err) {
+            console.warn(`⚠️ symbol() failed for ${tokenAddress}: ${err.shortMessage || err.message}`);
         }
-    } catch (err) {
-        console.warn(`⚠️ Could not fetch token identity for ${tokenAddress}: ${err.shortMessage || err.message}`);
     }
 
     console.log(`\n🔍 Starting Buyback Analysis for ${tokenName} ($${tokenSymbol}) - ${tokenAddress}`);
@@ -293,7 +300,7 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
 
     if (launchBlock < 0) {
         onProgress?.(100, 'No tax collected, tracking not applicable.');
-        return buildEmptyBuybackReport(tokenAddress, taxReport);
+        return buildEmptyBuybackReport(tokenAddress, taxReport, tokenName, tokenSymbol);
     }
 
     const currentBlockHex = await rpcCall('eth_blockNumber', []);
@@ -346,11 +353,11 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
     };
 }
 
-function buildEmptyBuybackReport(tokenAddress, taxReport) {
+function buildEmptyBuybackReport(tokenAddress, taxReport, tokenName = 'Unknown', tokenSymbol = 'TOKEN') {
     return {
         tokenAddress,
-        tokenSymbol: 'TOKEN',
-        tokenName: 'Unknown',
+        tokenSymbol,
+        tokenName,
         taxWallet: TAX_ADDRESS,
         launchBlock: taxReport.launchBlock || 0,
         totalTaxCollectedVirtual: 0,

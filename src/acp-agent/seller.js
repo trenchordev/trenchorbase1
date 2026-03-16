@@ -156,6 +156,19 @@ function parseJobRequirement(job) {
 
 const validationClient = createPublicClient({ chain: base, transport: http(RPC_URL) });
 
+// ─── System Contract Blocklist ────────────────────────────────────────────────
+// DevRel sends known Base system/infrastructure tokens as negative-test traps.
+// These are real contracts (have bytecode) so the getBytecode check alone won't catch them.
+// We must reject them explicitly in Phase 0 because they are not Virtuals Protocol ecosystem tokens.
+const SYSTEM_CONTRACT_BLOCKLIST = new Set([
+    '0x4200000000000000000000000000000000000006', // WETH on Base
+    '0x833589fcd6edb6e08f4c7c32d4f71b54bda02913', // USDC on Base
+    '0x50c5725949a6f0c72e6c4a641f24049a917db0cb', // DAI on Base
+    '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca', // USDbC on Base
+    '0x2ae3f1ec7f1f5012cfeab0185bfc7aa3cf0dec22', // cbETH on Base
+    '0x4200000000000000000000000000000000000042', // OP on Base
+]);
+
 /**
  * Validates a token address FORMAT and performs a fast on-chain verification.
  * Resolves DEVREL negative testing requirements by formally rejecting EOAs and burn addresses.
@@ -169,10 +182,15 @@ async function validateTokenOnChain(tokenAddress) {
     if (!/^0x[a-fA-F0-9]{40}$/i.test(tokenAddress)) {
         return { valid: false, reason: `Invalid token address format: "${tokenAddress}". Must be a 42-character hex string starting with 0x.` };
     }
-    
+
     const lowerAddr = tokenAddress.toLowerCase();
     if (lowerAddr === '0x0000000000000000000000000000000000000000' || lowerAddr === '0x000000000000000000000000000000000000dead') {
         return { valid: false, reason: 'Cannot analyze the zero or burn address.' };
+    }
+
+    // Reject known Base system/infrastructure contracts — these are not Virtuals ecosystem tokens.
+    if (SYSTEM_CONTRACT_BLOCKLIST.has(lowerAddr)) {
+        return { valid: false, reason: `${tokenAddress} is a Base network system contract (e.g. WETH, USDC). This service only analyzes Virtuals Protocol ecosystem tokens.` };
     }
 
     try {
@@ -192,6 +210,23 @@ async function validateTokenOnChain(tokenAddress) {
         }
     }
     return { valid: true };
+}
+
+// ─── Phase 2 Execution Timeout ───────────────────────────────────────────────
+// ACP jobs expire after 30 minutes. We use a 25-minute hard timeout so we can
+// call rejectPayable() (triggering a refund) before the job silently expires.
+const PHASE2_TIMEOUT_MS = 25 * 60 * 1000;
+
+function withPhase2Timeout(promise) {
+    return Promise.race([
+        promise,
+        new Promise((_, reject) =>
+            setTimeout(
+                () => reject(new Error('Job calculation exceeded the 25-minute timeout. Scan window may be too large for this token.')),
+                PHASE2_TIMEOUT_MS
+            )
+        ),
+    ]);
 }
 
 // ─── Job Processing ──────────────────────────────────────────────────────────
@@ -217,9 +252,11 @@ async function doPhase2Work(job) {
         let report, deliverable, telegramMsg;
 
         if (intent === 'buyback_track') {
-            report = await calculateBuybacks(tokenAddress, RPC_URL, async (percent, message) => {
-                console.log(`⏳ Job ${jobId} Progress: ${percent}% - ${message}`);
-            });
+            report = await withPhase2Timeout(
+                calculateBuybacks(tokenAddress, RPC_URL, async (percent, message) => {
+                    console.log(`⏳ Job ${jobId} Progress: ${percent}% - ${message}`);
+                })
+            );
             deliverable = formatBuybackReport(report);
 
             telegramMsg = `✅ <b>Buyback Job Tamamlandı!</b>\n` +
@@ -233,9 +270,11 @@ async function doPhase2Work(job) {
                 `⏱ Süre: ${Math.round((Date.now() - _jobStartTime) / 1000)}s`;
         } else {
             // Existing native tax scan feature
-            report = await calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
-                console.log(`⏳ Job ${jobId} Progress: ${percent}% - ${message}`);
-            });
+            report = await withPhase2Timeout(
+                calculateTax(tokenAddress, RPC_URL, async (percent, message) => {
+                    console.log(`⏳ Job ${jobId} Progress: ${percent}% - ${message}`);
+                })
+            );
             deliverable = formatTaxReport(report);
 
             telegramMsg = `✅ <b>Tax Job Tamamlandı!</b>\n` +
