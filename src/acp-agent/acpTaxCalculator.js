@@ -192,9 +192,31 @@ async function fetchLogs(contractAddress, fromBlock, toBlock, toAddressFilter) {
 
 // ─── Deploy Block Detection ───────────────────────────────────────────────────
 
+const BASESCAN_API_KEY = process.env.BASESCAN_API_KEY || '';
+
 /**
- * Binary search for the first block where the contract code exists.
- * O(log N) = ~25 RPC calls, handles any token age.
+ * Fast deploy block lookup via BaseScan API (1 HTTP call, no archival RPC needed).
+ * Returns block number or null on failure.
+ */
+async function getDeployBlockFromBaseScan(tokenAddress) {
+    if (!BASESCAN_API_KEY) return null;
+    try {
+        const url = `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${tokenAddress}&apikey=${BASESCAN_API_KEY}`;
+        const { data } = await axios.get(url, { timeout: 8000 });
+        if (data?.status === '1' && data?.result?.[0]?.blockNumber) {
+            const block = parseInt(data.result[0].blockNumber, 10);
+            console.log(`✅ BaseScan deploy block: ${block.toLocaleString()} (1 API call)`);
+            return block;
+        }
+    } catch (err) {
+        console.warn(`   ⚠️ BaseScan deploy block lookup failed: ${err.message?.slice(0, 60)}`);
+    }
+    return null;
+}
+
+/**
+ * Finds the first block where the contract exists.
+ * Strategy: BaseScan API first (fast, no archival RPC) → binary search fallback.
  */
 async function getDeployBlock(tokenAddress, currentBlock) {
     const codeNow = await rpcCall('eth_getCode', [tokenAddress, 'latest']);
@@ -202,9 +224,16 @@ async function getDeployBlock(tokenAddress, currentBlock) {
         console.warn(`⚠️ DEVREL Bypass: ${tokenAddress} is an EOA (no bytecode). Gracefully returning empty scan window.`);
         return currentBlock;
     }
+
+    // Primary: BaseScan API — 1 call, works for any token age, no archival RPC needed
+    const bsBlock = await getDeployBlockFromBaseScan(tokenAddress);
+    if (bsBlock && bsBlock > 0) return bsBlock;
+
+    // Fallback: binary search over RPC (requires archival node for old tokens)
+    console.warn(`   ⚠️ BaseScan unavailable, falling back to binary search...`);
     let lo = VIRTUALS_FLOOR;
     let hi = currentBlock;
-    let maxIter = 60; // log2(currentBlock) ≈ 25; 60 gives generous room and prevents infinite loops on persistent RPC errors
+    let maxIter = 60; // log2(currentBlock) ≈ 25; 60 is a generous safety cap
     while (lo < hi && maxIter-- > 0) {
         const mid = Math.floor((lo + hi) / 2);
         try {

@@ -54,11 +54,16 @@ async function tgNotify(text) {
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const envPath = resolve(__dirname, '../../.env.acp');
+const envRootPath = resolve(__dirname, '../../.env');
 
-// Load .env.acp if it exists (local dev), otherwise use system env vars (Railway/Docker)
+// Load env files if they exist (local dev); Railway/Docker uses system env vars directly.
+// Load root .env first (lowest priority), then .env.acp overrides it.
 import { existsSync } from 'fs';
+if (existsSync(envRootPath)) {
+    config({ path: envRootPath });
+}
 if (existsSync(envPath)) {
-    config({ path: envPath });
+    config({ path: envPath, override: true });
 }
 
 const AGENT_PRIVATE_KEY = process.env.ACP_AGENT_WALLET_PRIVATE_KEY;
