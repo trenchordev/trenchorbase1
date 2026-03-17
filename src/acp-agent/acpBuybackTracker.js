@@ -283,6 +283,15 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
 
     console.log(`\n🔍 Starting Buyback Analysis for ${tokenName} ($${tokenSymbol}) - ${tokenAddress}`);
 
+    // VIRTUAL is the ecosystem base currency — every Virtuals token purchase involves VIRTUAL
+    // transfers, making a buyback scan span the entire Base blockchain history (20M+ blocks)
+    // and semantically meaningless (VIRTUAL cannot buy back itself).
+    // Return empty report immediately before calling calculateTax to avoid the full scan.
+    if (normToken === VIRTUAL_ADDRESS) {
+        onProgress?.(100, 'VIRTUAL is the ecosystem base currency. Buyback tracking not applicable.');
+        return buildEmptyBuybackReport(tokenAddress, { launchBlock: 0 }, tokenName, tokenSymbol);
+    }
+
     // 1. Get Foundation Tax Data (0-20% progress implied inside)
     onProgress?.(5, `Running baseline tax analysis for $${tokenSymbol}...`);
 
