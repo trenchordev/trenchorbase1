@@ -137,14 +137,14 @@ function parseJobRequirement(job) {
     let tokenAddress = null;
     let intent = 'tax_scan';
 
-    // Safely extract token address from requirement or memos
+    // Extract token address ONLY from the requirement field — never from memos.
+    // Searching memos caused a critical bug: memos contain legitimate Ethereum addresses
+    // (clientAddress, offeringAddress, etc.) that would be mistaken for the tokenAddress,
+    // causing invalid requests like "0xabc" or "invalid-token" to be ACCEPTED instead of REJECTED.
     const req = job.requirement || job.memos?.[0]?.content;
     const reqStr = typeof req === 'string' ? req : JSON.stringify(req || {});
-    const memoStr = JSON.stringify(job.memos || []);
 
-    // Look for 0x address
-    let match = reqStr.match(/0x[a-fA-F0-9]{40}/i);
-    if (!match) match = memoStr.match(/0x[a-fA-F0-9]{40}/i);
+    const match = reqStr.match(/0x[a-fA-F0-9]{40}/i);
     if (match) tokenAddress = match[0];
 
     // Deduce user Intent (Buyback vs Standard Tax Scan)
@@ -172,7 +172,8 @@ const SYSTEM_CONTRACT_BLOCKLIST = new Set([
     '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca', // USDbC on Base
     '0x2ae3f1ec7f1f5012cfeab0185bfc7aa3cf0dec22', // cbETH on Base
     '0x4200000000000000000000000000000000000042', // OP on Base
-    '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b', // VIRTUAL token itself — scanning the base currency is nonsensical and causes infinite-range scans
+    // NOTE: VIRTUAL token (0x0b3e...) must NOT be here — DevRel expects ACCEPT for it.
+    // The tax calculator handles it gracefully: findLaunchBlock returns -1 → empty 0-tax report delivered.
 ]);
 
 /**

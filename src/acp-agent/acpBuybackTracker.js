@@ -296,8 +296,14 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
 
     const launchBlock = taxReport.launchBlock;
 
-    if (launchBlock < 0) {
-        onProgress?.(100, 'No tax collected, tracking not applicable.');
+    // Short-circuit: if the tax report found zero valid tax transactions, there are no
+    // buyback funds to track. This covers two cases:
+    //   1. Token has no Virtuals bonding-curve intersection (e.g. VIRTUAL itself as base currency)
+    //      → calculateTax returns deployBlock as launchBlock and 0 validTransactions
+    //   2. Token genuinely had 0 tax in its 2940-block window (e.g. GAME)
+    // In both cases, scanning millions of historical blocks is wasteful and risks timeout.
+    if (launchBlock < 0 || taxReport.validTransactions === 0) {
+        onProgress?.(100, 'No tax transactions detected. Buyback tracking not applicable.');
         return buildEmptyBuybackReport(tokenAddress, taxReport, tokenName, tokenSymbol);
     }
 
