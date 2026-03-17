@@ -33,7 +33,7 @@ const DISCOVERY_PARALLELISM = 3;   // how many chunks to scan simultaneously dur
 const VIRTUALS_FLOOR = 1_000_000;  // floor for deploy-block binary search; 1M covers all Base history incl. early VIRTUAL token
 const RPC_TIMEOUT_MS = 12_000;   // per-call timeout
 const DELAY_BETWEEN_MS = 200;      // rate-limit safety delay (higher = fewer 429s under concurrent load)
-const DISCOVERY_WINDOW = 600_000;  // scan up to ~14 days after deploy to find launch (some tokens have 10+ day gaps)
+const DISCOVERY_WINDOW = 100_000;  // scan up to ~2.3 days after deploy to find launch; 99% of Virtuals tokens launch within hours of deploy
 
 const SYMBOL_SIG = '0x95d89b41';
 

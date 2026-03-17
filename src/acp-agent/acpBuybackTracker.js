@@ -9,9 +9,9 @@ const TAX_ADDRESS = '0x32487287c65f11d53bbca89c2472171eb09bf337';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const PADDED_TAX_ADDR = '0x000000000000000000000000' + TAX_ADDRESS.slice(2).toLowerCase();
 
-const CHUNK_SIZE = 50000;          // Aggressively scan up to 50k blocks per request 
-const CONCURRENT_CHUNKS = 20;      // Lower concurrency to respect RPC rate limits when fetching huge chunks
-const RPC_TIMEOUT_MS = 25_000;     // Allow more time for massive payload resolutions
+const CHUNK_SIZE = 10000;          // 10K blocks per getLogs call — safe for free public RPCs without 413 errors
+const CONCURRENT_CHUNKS = 4;       // Low concurrency to prevent rate-limiting on free RPCs when multiple jobs run
+const RPC_TIMEOUT_MS = 15_000;     // Tighter timeout — fail fast and retry rather than hanging
 
 // Public Base RPC endpoints
 const _customRpc = process.env.DRPC_RPC_URL || process.env.ALCHEMY_RPC_URL;
@@ -294,8 +294,6 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
 
     const totalVirtualCollected = taxReport.totalTaxVirtual;
 
-    // The buyback window starts AFTER the original 2940 block tax window closes
-    // Let's scan from launchBlock (in case they spent early, though rare) up to latest
     const launchBlock = taxReport.launchBlock;
 
     if (launchBlock < 0) {
@@ -306,10 +304,15 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
     const currentBlockHex = await rpcCall('eth_blockNumber', []);
     const currentBlock = parseInt(currentBlockHex, 16);
 
-    console.log(`📡 Scanning Buybacks from block ${launchBlock} to ${currentBlock}...`);
+    // Buyback scanning starts AFTER the 2940-block tax window ends.
+    // Tax window: [launchBlock, launchBlock+2940] — already fully scanned by calculateTax.
+    // Buybacks only happen after the tax period closes, so we skip the already-scanned range.
+    const buybackScanStart = Math.min(taxReport.scanEndBlock || (launchBlock + 2940), currentBlock);
 
-    // 2. Scan millions of blocks via parallel chunking engine
-    const buybackTxns = await scanTargetTokenToTaxWallet(tokenAddress, launchBlock, currentBlock, onProgress);
+    console.log(`📡 Scanning Buybacks from block ${buybackScanStart.toLocaleString()} to ${currentBlock.toLocaleString()} (${(currentBlock - buybackScanStart).toLocaleString()} blocks)...`);
+
+    // 2. Scan blocks from after tax window to current block via parallel chunking engine
+    const buybackTxns = await scanTargetTokenToTaxWallet(tokenAddress, buybackScanStart, currentBlock, onProgress);
 
     console.log(`🎯 Found ${buybackTxns.length} potential buyback transactions!`);
 

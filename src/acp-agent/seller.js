@@ -87,8 +87,8 @@ if (!AGENT_PRIVATE_KEY || !AGENT_WALLET || !ENTITY_ID) {
 // We separate quick Phase 0 responses from heavy Phase 2 calculations to prevent
 // Phase 0 timeouts (which cause the agent to get "Expired" jobs).
 
-const MAX_CONCURRENT_CALCS = 2;  // Reduced: fewer concurrent = fewer RPC collisions
-const MAX_QUEUE_SIZE = 5; // allow up to 5 jobs in queue waiting for calc
+const MAX_CONCURRENT_CALCS = 2;  // Max parallel calculations — fewer = fewer RPC collisions
+const MAX_QUEUE_SIZE = 2; // Only allow 2 queued jobs — prevents accepting jobs we can't finish before ACP expiry
 let activeCalculations = 0;
 const calculationQueue = [];
 let jobStats = { accepted: 0, rejected: 0, delivered: 0, failed: 0 };
@@ -172,6 +172,7 @@ const SYSTEM_CONTRACT_BLOCKLIST = new Set([
     '0xd9aaec86b65d86f6a7b5b1b0c42ffa531710b6ca', // USDbC on Base
     '0x2ae3f1ec7f1f5012cfeab0185bfc7aa3cf0dec22', // cbETH on Base
     '0x4200000000000000000000000000000000000042', // OP on Base
+    '0x0b3e328455c4059eeb9e3f84b5543f74e24e7e1b', // VIRTUAL token itself — scanning the base currency is nonsensical and causes infinite-range scans
 ]);
 
 /**
@@ -218,9 +219,11 @@ async function validateTokenOnChain(tokenAddress) {
 }
 
 // ─── Phase 2 Execution Timeout ───────────────────────────────────────────────
-// ACP jobs expire after 30 minutes. We use a 25-minute hard timeout so we can
-// call rejectPayable() (triggering a refund) before the job silently expires.
-const PHASE2_TIMEOUT_MS = 25 * 60 * 1000;
+// ACP jobs have a 30-minute expiry. We use 15 minutes because:
+// - Job may wait in queue for several minutes before starting
+// - If it fails, rejectPayable() needs time to execute before the 30-min hard expiry
+// - Better to reject fast and let user retry than to expire silently
+const PHASE2_TIMEOUT_MS = 15 * 60 * 1000;
 
 function withPhase2Timeout(promise) {
     return Promise.race([
@@ -293,9 +296,6 @@ async function doPhase2Work(job) {
 
         console.log(`\n📤 Delivering results for Job ${jobId}...`);
 
-        // Brief delay for network settlement
-        await new Promise(resolve => setTimeout(resolve, 5000));
-
         // Deliver the result → advances job to EVALUATION phase
         const result = await job.deliver(deliverable);
         console.log(`✅ Job ${jobId} delivered successfully!`);
@@ -361,9 +361,12 @@ async function handleNewTask(job) {
         if (phase === 0) {
             console.log(`🔄 Phase 0: Validating request...`);
 
-            // CAPACITY CHECK: Prevent taking more jobs than we can handle within SLA (5 min)
-            if (activeCalculations + calculationQueue.length >= MAX_CONCURRENT_CALCS + MAX_QUEUE_SIZE) {
-                console.log(`🚫 REJECTING: Server at full capacity (active: ${activeCalculations}, queued: ${calculationQueue.length})`);
+            // CAPACITY CHECK: Reject early if we can't realistically finish before ACP expiry.
+            // With MAX_CONCURRENT_CALCS=2 and each calc taking ~5-10 min, accepting more than
+            // 2 active + 2 queued = 4 total means the 4th job won't start for ~20 min and will expire.
+            const totalPending = activeCalculations + calculationQueue.length;
+            if (totalPending >= MAX_CONCURRENT_CALCS + MAX_QUEUE_SIZE) {
+                console.log(`🚫 REJECTING: Server at full capacity (active: ${activeCalculations}, queued: ${calculationQueue.length}). Rejecting to prevent expiry.`);
                 jobStats.rejected++;
                 await job.respond(false, 'Request rejected: Server is currently at full capacity processing other requests. Please try again in a few minutes.');
                 logQueueStatus();
