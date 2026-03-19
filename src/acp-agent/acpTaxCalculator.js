@@ -33,7 +33,7 @@ const DISCOVERY_PARALLELISM = 3;   // how many chunks to scan simultaneously dur
 const VIRTUALS_FLOOR = 1_000_000;  // floor for deploy-block binary search; 1M covers all Base history incl. early VIRTUAL token
 const RPC_TIMEOUT_MS = 12_000;   // per-call timeout
 const DELAY_BETWEEN_MS = 200;      // rate-limit safety delay (higher = fewer 429s under concurrent load)
-const DISCOVERY_WINDOW = 100_000;  // scan up to ~2.3 days after deploy to find launch; 99% of Virtuals tokens launch within hours of deploy
+const DISCOVERY_WINDOW = 500_000;  // scan up to ~11.5 days after deploy to find launch; covers pre-bonding tokens that launch days after deploy
 
 const SYMBOL_SIG = '0x95d89b41';
 
@@ -192,24 +192,29 @@ async function fetchLogs(contractAddress, fromBlock, toBlock, toAddressFilter) {
 
 // ─── Deploy Block Detection ───────────────────────────────────────────────────
 
-const BASESCAN_API_KEY = process.env.BASESCAN_API_KEY || '';
+const MORALIS_API_KEY = process.env.MORALIS_API_KEY || '';
 
 /**
- * Fast deploy block lookup via BaseScan API (1 HTTP call, no archival RPC needed).
+ * Fast deploy block lookup via Moralis ERC20 metadata API (1 HTTP call, no archival RPC needed).
  * Returns block number or null on failure.
+ * BaseScan V1 API is deprecated as of 2026; Moralis provides block_number in its erc20/metadata endpoint.
  */
-async function getDeployBlockFromBaseScan(tokenAddress) {
-    if (!BASESCAN_API_KEY) return null;
+async function getDeployBlockFast(tokenAddress) {
+    if (!MORALIS_API_KEY) return null;
     try {
-        const url = `https://api.basescan.org/api?module=contract&action=getcontractcreation&contractaddresses=${tokenAddress}&apikey=${BASESCAN_API_KEY}`;
-        const { data } = await axios.get(url, { timeout: 8000 });
-        if (data?.status === '1' && data?.result?.[0]?.blockNumber) {
-            const block = parseInt(data.result[0].blockNumber, 10);
-            console.log(`✅ BaseScan deploy block: ${block.toLocaleString()} (1 API call)`);
+        const url = `https://deep-index.moralis.io/api/v2.2/erc20/metadata?chain=base&addresses[0]=${tokenAddress}`;
+        const { data } = await axios.get(url, {
+            timeout: 10000,
+            headers: { 'X-API-Key': MORALIS_API_KEY },
+        });
+        const blockNum = data?.[0]?.block_number;
+        if (blockNum) {
+            const block = parseInt(blockNum, 10);
+            console.log(`✅ Moralis deploy block: ${block.toLocaleString()} (1 API call)`);
             return block;
         }
     } catch (err) {
-        console.warn(`   ⚠️ BaseScan deploy block lookup failed: ${err.message?.slice(0, 60)}`);
+        console.warn(`   ⚠️ Moralis deploy block lookup failed: ${err.message?.slice(0, 60)}`);
     }
     return null;
 }
@@ -225,12 +230,12 @@ async function getDeployBlock(tokenAddress, currentBlock) {
         return currentBlock;
     }
 
-    // Primary: BaseScan API — 1 call, works for any token age, no archival RPC needed
-    const bsBlock = await getDeployBlockFromBaseScan(tokenAddress);
-    if (bsBlock && bsBlock > 0) return bsBlock;
+    // Primary: Moralis API — 1 call, returns exact deploy block_number from contract metadata
+    const fastBlock = await getDeployBlockFast(tokenAddress);
+    if (fastBlock && fastBlock > 0) return fastBlock;
 
     // Fallback: binary search over RPC (requires archival node for old tokens)
-    console.warn(`   ⚠️ BaseScan unavailable, falling back to binary search...`);
+    console.warn(`   ⚠️ Moralis unavailable, falling back to binary search...`);
     let lo = VIRTUALS_FLOOR;
     let hi = currentBlock;
     let maxIter = 60; // log2(currentBlock) ≈ 25; 60 is a generous safety cap
