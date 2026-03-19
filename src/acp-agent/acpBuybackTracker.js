@@ -318,12 +318,13 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
     const currentBlock = parseInt(currentBlockHex, 16);
 
     // Buyback scan window:
-    //   Start: right after the 2940-block tax window (already covered by calculateTax)
-    //   End:   currentBlock — no artificial cap. Phase 0 already blocks WETH/VIRTUAL/system
-    //          contracts, so only real Virtuals tokens reach here. With 50K chunks fired
-    //          20-at-a-time, even a 20M block range (400 chunks / 20 = 20 batches) completes
-    //          in ~60-120 seconds — well within the 15-minute Phase 2 timeout.
-    const buybackScanStart = Math.min(taxReport.scanEndBlock || (launchBlock + 2940), currentBlock);
+    //   Start: launchBlock itself — NOT launchBlock+2940.
+    //          Reason: buybacks can happen within the tax window (e.g. protocol buys back
+    //          in the same ~98-minute window as tax collection). Starting from scanEndBlock
+    //          caused TX1 (block launchBlock+2939) to be missed entirely.
+    //   End:   currentBlock — no cap. Phase 0 blocks system contracts; 50K×20 concurrent
+    //          handles 20M blocks in ~20 batches (~60-120 s), well within the 15-min timeout.
+    const buybackScanStart = launchBlock;
     const buybackScanEnd = currentBlock;
 
     console.log(`📡 Scanning Buybacks from block ${buybackScanStart.toLocaleString()} to ${buybackScanEnd.toLocaleString()} (${(buybackScanEnd - buybackScanStart).toLocaleString()} blocks)...`);
