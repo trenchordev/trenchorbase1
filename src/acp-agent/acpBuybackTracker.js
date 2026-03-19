@@ -108,71 +108,71 @@ async function getLogsChunk(contractAddress, fromBlock, toBlock, topics) {
 // ─── Parallel Chunking Scanner ───────────────────────────────────────────────
 
 /**
- * Scans millions of blocks in parallel to find all buyback transactions.
- * Buyback Definition: VIRTUAL transferred FROM Tax Wallet where the destination router 
- * matches a Target Token liquidity transfer (we simplify by just scanning VIRTUAL spent by Tax Wallet
- * during a window, but we need the exact Pair).
+ * Scans for buyback transactions using a dual-signal approach:
  *
- * Better approach learned from TX analysis:
- * In a buyback, the Target Token emits a Transfer where `to` == Tax Wallet.
- * We fetch all Target Token logs going TO the Tax Wallet.
+ * OLD (WRONG): Scanned target token Transfer where to==taxWallet.
+ *   Problem: Virtuals Protocol buybacks burn the token directly from the bonding curve
+ *   rather than sending it to the tax wallet first. So taxWallet never receives the token.
+ *
+ * NEW (CORRECT): Dual scan per chunk —
+ *   Signal A: VIRTUAL Transfer where from==taxWallet (taxWallet spends VIRTUAL → buyback signal)
+ *   Signal B: Target token Transfer (any direction — covers both "to taxWallet" and burn cases)
+ *   A buyback tx = same txHash appears in BOTH sets.
+ *
+ * This works regardless of whether the bonding curve returns tokens to the tax wallet
+ * or burns them directly. The VIRTUAL outflow from taxWallet IS the buyback.
  */
 async function scanTargetTokenToTaxWallet(targetToken, startBlock, endBlock, onProgress) {
-    const totalBlocks = endBlock - startBlock;
     const chunks = [];
-
     for (let from = startBlock; from <= endBlock; from += CHUNK_SIZE + 1) {
-        chunks.push({
-            from,
-            to: Math.min(from + CHUNK_SIZE, endBlock)
-        });
+        chunks.push({ from, to: Math.min(from + CHUNK_SIZE, endBlock) });
     }
 
     const totalChunks = chunks.length;
     let completedChunks = 0;
-    let allLogs = [];
 
-    // Process in batches to avoid crushing public RPCs completely
+    // Two accumulator sets — intersect after scanning
+    const virtualSpendTxSet = new Set();  // txHashes where taxWallet sent VIRTUAL
+    const targetTokenTxSet = new Set();   // txHashes where the target token had ANY transfer
+
     for (let i = 0; i < totalChunks; i += CONCURRENT_CHUNKS) {
         const batch = chunks.slice(i, i + CONCURRENT_CHUNKS);
 
         const batchPromises = batch.map(async (chunk) => {
-            // Topic 0: Transfer
-            // Topic 1: Any (who cares who sent it) => null
-            // Topic 2: Tax Wallet (recipient) => PADDED_TAX_ADDR
-            const logs = await getLogsChunk(
-                targetToken.toLowerCase(),
-                chunk.from,
-                chunk.to,
-                [TRANSFER_TOPIC, null, PADDED_TAX_ADDR]
-            );
-            return logs || [];
+            const [virtualLogs, targetLogs] = await Promise.all([
+                // Signal A: VIRTUAL FROM taxWallet (spending = buyback intent)
+                getLogsChunk(
+                    VIRTUAL_ADDRESS.toLowerCase(),
+                    chunk.from, chunk.to,
+                    [TRANSFER_TOPIC, PADDED_TAX_ADDR, null]
+                ).catch(() => []),
+                // Signal B: target token ANY transfer (burn or receipt — either proves token activity)
+                getLogsChunk(
+                    targetToken.toLowerCase(),
+                    chunk.from, chunk.to,
+                    [TRANSFER_TOPIC]
+                ).catch(() => []),
+            ]);
+            return { virtualLogs: virtualLogs || [], targetLogs: targetLogs || [] };
         });
 
         const batchResults = await Promise.all(batchPromises);
 
-        for (const logs of batchResults) {
-            allLogs = allLogs.concat(logs);
+        for (const { virtualLogs, targetLogs } of batchResults) {
+            for (const log of virtualLogs) virtualSpendTxSet.add(log.transactionHash.toLowerCase());
+            for (const log of targetLogs)  targetTokenTxSet.add(log.transactionHash.toLowerCase());
         }
 
         completedChunks += batch.length;
         const pct = Math.round((completedChunks / totalChunks) * 100);
-
-        // Progress reporting (offset 20-80% of total tracker progress)
         onProgress?.(20 + Math.floor(pct * 0.6), `Scanning blocks... ${pct}%`);
     }
 
-    // De-duplicate any potential overlaps, just in case
-    const uniqueTxHashes = new Set();
+    // Intersection: txs where BOTH taxWallet spent VIRTUAL AND the target token was involved
     const uniqueReceiptBlocks = [];
-    for (const log of allLogs) {
-        const hash = log.transactionHash.toLowerCase();
-        if (!uniqueTxHashes.has(hash)) {
-            uniqueTxHashes.add(hash);
-            uniqueReceiptBlocks.push({
-                hash,
-                blockNumber: parseInt(log.blockNumber, 16)
-            });
+    for (const hash of virtualSpendTxSet) {
+        if (targetTokenTxSet.has(hash)) {
+            uniqueReceiptBlocks.push({ hash, blockNumber: 0 });
         }
     }
 
