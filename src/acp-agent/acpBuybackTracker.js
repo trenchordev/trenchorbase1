@@ -13,7 +13,6 @@ const PADDED_TAX_ADDR = '0x000000000000000000000000' + TAX_ADDRESS.slice(2).toLo
 const CHUNK_SIZE = 50_000;         // 50K blocks per getLogs call — large chunks = fewer round-trips = faster scans
 const CONCURRENT_CHUNKS = 20;      // Fire 20 chunks simultaneously; getLogsChunk auto-halves on 413
 const RPC_TIMEOUT_MS = 25_000;     // 25s per call — large chunks need more time before halving kicks in
-const BUYBACK_SCAN_CAP = 100_000;  // Max blocks to scan ahead of launch — prevents runaway scans on old/massive tokens
 
 // Public Base RPC endpoints
 const _customRpc = process.env.DRPC_RPC_URL || process.env.ALCHEMY_RPC_URL;
@@ -320,17 +319,14 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
 
     // Buyback scan window:
     //   Start: right after the 2940-block tax window (already covered by calculateTax)
-    //   End:   capped at BUYBACK_SCAN_CAP blocks beyond launch to keep scans fast.
-    //          This covers ~2.3 days of blocks — more than enough for post-launch buybacks.
+    //   End:   currentBlock — no artificial cap. Phase 0 already blocks WETH/VIRTUAL/system
+    //          contracts, so only real Virtuals tokens reach here. With 50K chunks fired
+    //          20-at-a-time, even a 20M block range (400 chunks / 20 = 20 batches) completes
+    //          in ~60-120 seconds — well within the 15-minute Phase 2 timeout.
     const buybackScanStart = Math.min(taxReport.scanEndBlock || (launchBlock + 2940), currentBlock);
-    const buybackScanEnd = Math.min(currentBlock, launchBlock + 2940 + BUYBACK_SCAN_CAP);
+    const buybackScanEnd = currentBlock;
 
-    if (buybackScanStart >= buybackScanEnd) {
-        onProgress?.(100, 'Buyback scan window already covered by tax period.');
-        return buildEmptyBuybackReport(tokenAddress, taxReport, tokenName, tokenSymbol);
-    }
-
-    console.log(`📡 Scanning Buybacks from block ${buybackScanStart.toLocaleString()} to ${buybackScanEnd.toLocaleString()} (${(buybackScanEnd - buybackScanStart).toLocaleString()} blocks, cap: ${BUYBACK_SCAN_CAP.toLocaleString()})...`);
+    console.log(`📡 Scanning Buybacks from block ${buybackScanStart.toLocaleString()} to ${buybackScanEnd.toLocaleString()} (${(buybackScanEnd - buybackScanStart).toLocaleString()} blocks)...`);
 
     // 2. Scan the capped window via 50K-chunk parallel engine with recursive 413 halving
     const buybackTxns = await scanTargetTokenToTaxWallet(tokenAddress, buybackScanStart, buybackScanEnd, onProgress);
