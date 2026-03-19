@@ -10,9 +10,10 @@ const TAX_ADDRESS = '0x32487287c65f11d53bbca89c2472171eb09bf337';
 const TRANSFER_TOPIC = '0xddf252ad1be2c89b69c2b068fc378daa952ba7f163c4a11628f55a4df523b3ef';
 const PADDED_TAX_ADDR = '0x000000000000000000000000' + TAX_ADDRESS.slice(2).toLowerCase();
 
-const CHUNK_SIZE = 10000;          // 10K blocks per getLogs call — safe for free public RPCs without 413 errors
-const CONCURRENT_CHUNKS = 4;       // Low concurrency to prevent rate-limiting on free RPCs when multiple jobs run
-const RPC_TIMEOUT_MS = 15_000;     // Tighter timeout — fail fast and retry rather than hanging
+const CHUNK_SIZE = 50_000;         // 50K blocks per getLogs call — large chunks = fewer round-trips = faster scans
+const CONCURRENT_CHUNKS = 20;      // Fire 20 chunks simultaneously; getLogsChunk auto-halves on 413
+const RPC_TIMEOUT_MS = 25_000;     // 25s per call — large chunks need more time before halving kicks in
+const BUYBACK_SCAN_CAP = 100_000;  // Max blocks to scan ahead of launch — prevents runaway scans on old/massive tokens
 
 // Public Base RPC endpoints
 const _customRpc = process.env.DRPC_RPC_URL || process.env.ALCHEMY_RPC_URL;
@@ -108,59 +109,50 @@ async function getLogsChunk(contractAddress, fromBlock, toBlock, topics) {
 // ─── Parallel Chunking Scanner ───────────────────────────────────────────────
 
 /**
- * Scans for buyback transactions using a dual-signal approach:
+ * Scans for buyback transactions.
  *
- * OLD (WRONG): Scanned target token Transfer where to==taxWallet.
- *   Problem: Virtuals Protocol buybacks burn the token directly from the bonding curve
- *   rather than sending it to the tax wallet first. So taxWallet never receives the token.
+ * Mechanism: During a buyback, the tax wallet transfers VIRTUAL *out* to a liquidity pool,
+ * and the target token is transferred *in* to the tax wallet in the exact same txHash.
  *
- * NEW (CORRECT): Dual scan per chunk —
- *   Signal A: VIRTUAL Transfer where from==taxWallet (taxWallet spends VIRTUAL → buyback signal)
- *   Signal B: Target token Transfer (any direction — covers both "to taxWallet" and burn cases)
- *   A buyback tx = same txHash appears in BOTH sets.
- *
- * This works regardless of whether the bonding curve returns tokens to the tax wallet
- * or burns them directly. The VIRTUAL outflow from taxWallet IS the buyback.
+ * Scan strategy:
+ *   - Filter: target token Transfer where topic[2] (to) == TAX_WALLET
+ *   - Range: [startBlock, min(currentBlock, launchBlock + BUYBACK_SCAN_CAP)]
+ *     The 100K cap prevents runaway scans on old/massive tokens. Phase 0 already rejects
+ *     true system contracts (WETH etc.) so this cap is purely a performance safety net.
+ *   - Chunks of 50K blocks fired 20 at a time; getLogsChunk auto-halves on 413 errors.
  */
 async function scanTargetTokenToTaxWallet(targetToken, startBlock, endBlock, onProgress) {
     const chunks = [];
+
     for (let from = startBlock; from <= endBlock; from += CHUNK_SIZE + 1) {
-        chunks.push({ from, to: Math.min(from + CHUNK_SIZE, endBlock) });
+        chunks.push({
+            from,
+            to: Math.min(from + CHUNK_SIZE, endBlock)
+        });
     }
 
     const totalChunks = chunks.length;
     let completedChunks = 0;
-
-    // Two accumulator sets — intersect after scanning
-    const virtualSpendTxSet = new Set();  // txHashes where taxWallet sent VIRTUAL
-    const targetTokenTxSet = new Set();   // txHashes where the target token had ANY transfer
+    let allLogs = [];
 
     for (let i = 0; i < totalChunks; i += CONCURRENT_CHUNKS) {
         const batch = chunks.slice(i, i + CONCURRENT_CHUNKS);
 
         const batchPromises = batch.map(async (chunk) => {
-            const [virtualLogs, targetLogs] = await Promise.all([
-                // Signal A: VIRTUAL FROM taxWallet (spending = buyback intent)
-                getLogsChunk(
-                    VIRTUAL_ADDRESS.toLowerCase(),
-                    chunk.from, chunk.to,
-                    [TRANSFER_TOPIC, PADDED_TAX_ADDR, null]
-                ).catch(() => []),
-                // Signal B: target token ANY transfer (burn or receipt — either proves token activity)
-                getLogsChunk(
-                    targetToken.toLowerCase(),
-                    chunk.from, chunk.to,
-                    [TRANSFER_TOPIC]
-                ).catch(() => []),
-            ]);
-            return { virtualLogs: virtualLogs || [], targetLogs: targetLogs || [] };
+            // Target token Transfer where to == taxWallet
+            const logs = await getLogsChunk(
+                targetToken.toLowerCase(),
+                chunk.from,
+                chunk.to,
+                [TRANSFER_TOPIC, null, PADDED_TAX_ADDR]
+            );
+            return logs || [];
         });
 
         const batchResults = await Promise.all(batchPromises);
 
-        for (const { virtualLogs, targetLogs } of batchResults) {
-            for (const log of virtualLogs) virtualSpendTxSet.add(log.transactionHash.toLowerCase());
-            for (const log of targetLogs)  targetTokenTxSet.add(log.transactionHash.toLowerCase());
+        for (const logs of batchResults) {
+            allLogs = allLogs.concat(logs);
         }
 
         completedChunks += batch.length;
@@ -168,11 +160,17 @@ async function scanTargetTokenToTaxWallet(targetToken, startBlock, endBlock, onP
         onProgress?.(20 + Math.floor(pct * 0.6), `Scanning blocks... ${pct}%`);
     }
 
-    // Intersection: txs where BOTH taxWallet spent VIRTUAL AND the target token was involved
+    // De-duplicate overlapping chunk edges
+    const uniqueTxHashes = new Set();
     const uniqueReceiptBlocks = [];
-    for (const hash of virtualSpendTxSet) {
-        if (targetTokenTxSet.has(hash)) {
-            uniqueReceiptBlocks.push({ hash, blockNumber: 0 });
+    for (const log of allLogs) {
+        const hash = log.transactionHash.toLowerCase();
+        if (!uniqueTxHashes.has(hash)) {
+            uniqueTxHashes.add(hash);
+            uniqueReceiptBlocks.push({
+                hash,
+                blockNumber: parseInt(log.blockNumber, 16)
+            });
         }
     }
 
@@ -320,15 +318,22 @@ export async function calculateBuybacks(tokenAddress, rpcUrl, onProgress) {
     const currentBlockHex = await rpcCall('eth_blockNumber', []);
     const currentBlock = parseInt(currentBlockHex, 16);
 
-    // Buyback scanning starts AFTER the 2940-block tax window ends.
-    // Tax window: [launchBlock, launchBlock+2940] — already fully scanned by calculateTax.
-    // Buybacks only happen after the tax period closes, so we skip the already-scanned range.
+    // Buyback scan window:
+    //   Start: right after the 2940-block tax window (already covered by calculateTax)
+    //   End:   capped at BUYBACK_SCAN_CAP blocks beyond launch to keep scans fast.
+    //          This covers ~2.3 days of blocks — more than enough for post-launch buybacks.
     const buybackScanStart = Math.min(taxReport.scanEndBlock || (launchBlock + 2940), currentBlock);
+    const buybackScanEnd = Math.min(currentBlock, launchBlock + 2940 + BUYBACK_SCAN_CAP);
 
-    console.log(`📡 Scanning Buybacks from block ${buybackScanStart.toLocaleString()} to ${currentBlock.toLocaleString()} (${(currentBlock - buybackScanStart).toLocaleString()} blocks)...`);
+    if (buybackScanStart >= buybackScanEnd) {
+        onProgress?.(100, 'Buyback scan window already covered by tax period.');
+        return buildEmptyBuybackReport(tokenAddress, taxReport, tokenName, tokenSymbol);
+    }
 
-    // 2. Scan blocks from after tax window to current block via parallel chunking engine
-    const buybackTxns = await scanTargetTokenToTaxWallet(tokenAddress, buybackScanStart, currentBlock, onProgress);
+    console.log(`📡 Scanning Buybacks from block ${buybackScanStart.toLocaleString()} to ${buybackScanEnd.toLocaleString()} (${(buybackScanEnd - buybackScanStart).toLocaleString()} blocks, cap: ${BUYBACK_SCAN_CAP.toLocaleString()})...`);
+
+    // 2. Scan the capped window via 50K-chunk parallel engine with recursive 413 halving
+    const buybackTxns = await scanTargetTokenToTaxWallet(tokenAddress, buybackScanStart, buybackScanEnd, onProgress);
 
     console.log(`🎯 Found ${buybackTxns.length} potential buyback transactions!`);
 
