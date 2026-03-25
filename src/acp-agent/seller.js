@@ -69,8 +69,14 @@ if (existsSync(envPath)) {
 const AGENT_PRIVATE_KEY = process.env.ACP_AGENT_WALLET_PRIVATE_KEY;
 const AGENT_WALLET = process.env.ACP_AGENT_WALLET_ADDRESS;
 const ENTITY_ID = parseInt(process.env.ACP_ENTITY_ID || '0');
-// RPC for on-chain data fetching (tax calculation)
-const RPC_URL = process.env.BASE_RPC_URL || 'https://mainnet.base.org';
+// RPC for on-chain data fetching — prefer keyed endpoints on Railway (public RPCs often return HTTP 403 for datacenter IPs).
+const _infuraKey = process.env.INFURA_API_KEY || process.env.NEXT_PUBLIC_INFURA_API_KEY;
+const RPC_URL =
+    process.env.DRPC_RPC_URL ||
+    process.env.ALCHEMY_RPC_URL ||
+    process.env.BASE_RPC_URL ||
+    (_infuraKey ? `https://base-mainnet.infura.io/v3/${_infuraKey}` : null) ||
+    'https://mainnet.base.org';
 
 // ─── Validation ──────────────────────────────────────────────────────────────
 

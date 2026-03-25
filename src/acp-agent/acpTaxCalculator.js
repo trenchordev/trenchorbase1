@@ -37,16 +37,16 @@ const DISCOVERY_WINDOW = 500_000;  // scan up to ~11.5 days after deploy to find
 
 const SYMBOL_SIG = '0x95d89b41';
 
-// ─── Viem Client ────────────────────────────────────────────────────────────
-
-const viemClient = createPublicClient({ chain: base, transport: http(process.env.DRPC_RPC_URL || process.env.ALCHEMY_RPC_URL || 'https://mainnet.base.org') });
-const erc20StringAbi = parseAbi(['function name() view returns (string)', 'function symbol() view returns (string)']);
-const erc20Bytes32Abi = parseAbi(['function name() view returns (bytes32)', 'function symbol() view returns (bytes32)']);
-
-// Public Base RPC endpoints — ordered by reliability (most stable first)
-// Supports DRPC_RPC_URL or ALCHEMY_RPC_URL env vars (drpc takes priority).
-// All others are free public RPCs used as fallback.
-const _customRpc = process.env.DRPC_RPC_URL || process.env.ALCHEMY_RPC_URL;
+// Public Base RPC endpoints — ordered by reliability (most stable first).
+// Prefer authenticated endpoints first (survives Railway/datacenter IP blocks that often return HTTP 403 on free RPCs).
+const _infuraKey = process.env.INFURA_API_KEY || process.env.NEXT_PUBLIC_INFURA_API_KEY;
+const _customRpc =
+    process.env.DRPC_RPC_URL ||
+    process.env.ALCHEMY_RPC_URL ||
+    (process.env.BASE_RPC_URL && !process.env.BASE_RPC_URL.includes('mainnet.base.org')
+        ? process.env.BASE_RPC_URL
+        : null) ||
+    (_infuraKey ? `https://base-mainnet.infura.io/v3/${_infuraKey}` : null);
 const BASE_RPCS = [
     ...(_customRpc ? [_customRpc] : []),
     'https://base.llamarpc.com',
@@ -55,6 +55,15 @@ const BASE_RPCS = [
     'https://base-rpc.publicnode.com',
     'https://mainnet.base.org',
 ];
+
+// ─── Viem Client (same preferred RPC as axios) ────────────────────────────────
+
+const viemClient = createPublicClient({
+    chain: base,
+    transport: http(_customRpc || 'https://mainnet.base.org'),
+});
+const erc20StringAbi = parseAbi(['function name() view returns (string)', 'function symbol() view returns (string)']);
+const erc20Bytes32Abi = parseAbi(['function name() view returns (bytes32)', 'function symbol() view returns (bytes32)']);
 
 // Startup log — confirms which RPCs are active (check logs after deploy)
 console.log(`🔌 RPC list (${BASE_RPCS.length} endpoints): ${BASE_RPCS.map((u, i) => `\n   [${i}] ${u}`).join('')}`);
@@ -119,6 +128,15 @@ async function rpcCall(method, params) {
                 console.warn(`   🚫 RPC[${url}] blacklisted (HTTP 400 — bad API key or wrong URL). Will not retry.`);
                 _deadEndpoints.add(url);
                 continue; // skip to next endpoint
+            }
+
+            // 401/403: Very common on public RPCs when the caller is a cloud/datacenter IP (e.g. Railway).
+            // Previously we threw immediately; must failover to the next endpoint in BASE_RPCS.
+            if ((status === 401 || status === 403) && attempt < ordered.length - 1) {
+                _strikeCount[url] = (_strikeCount[url] ?? 0) + 1;
+                console.warn(`   ⚠️ RPC[${url}] HTTP ${status} — often IP-blocked on public RPC. Trying next endpoint...`);
+                await sleep(200);
+                continue;
             }
 
             const retriable = [408, 413, 429, 500, 502, 503, 504].includes(status) ||
